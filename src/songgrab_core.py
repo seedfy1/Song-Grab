@@ -38,12 +38,12 @@ def app_dir() -> Path:
 
 # 让 HTTPS 校验在打包环境里也能找到 CA 证书
 def _init_ssl() -> None:
+    """把 CA 证书包路径写进环境变量（给 yt-dlp / requests 用）。"""
     try:
-        import certifi
-        ca = certifi.where()
-        if os.path.exists(ca):
-            os.environ.setdefault("SSL_CERT_FILE", ca)
-            os.environ.setdefault("REQUESTS_CA_BUNDLE", ca)
+        ca = _pc.ca_bundle()
+        if ca:
+            for k in ("SSL_CERT_FILE", "REQUESTS_CA_BUNDLE", "CURL_CA_BUNDLE"):
+                os.environ[k] = str(ca)
     except Exception:
         pass
 
@@ -74,9 +74,34 @@ _MIXIN_TAB = [
 ]
 
 _COOKIE_JAR = http.cookiejar.CookieJar()
-_OPENER = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(_COOKIE_JAR))
 _MIXIN_KEY = ""
 _MIXIN_AT = 0.0
+_OPENER = None
+
+
+def _ssl_context():
+    """显式指定 CA 包。Android 上 ssl 默认找不到证书，会 CERTIFICATE_VERIFY_FAILED。"""
+    import ssl
+    ca = _pc.ca_bundle()
+    try:
+        if ca:
+            return ssl.create_default_context(cafile=str(ca))
+    except Exception:
+        pass
+    return ssl.create_default_context()
+
+
+def _opener():
+    global _OPENER
+    if _OPENER is None:
+        handlers = [urllib.request.HTTPCookieProcessor(_COOKIE_JAR)]
+        try:
+            import ssl
+            handlers.insert(0, urllib.request.HTTPSHandler(context=_ssl_context()))
+        except Exception:
+            pass
+        _OPENER = urllib.request.build_opener(*handlers)
+    return _OPENER
 
 
 _USER_COOKIES_LOADED = False
@@ -113,7 +138,7 @@ def _boot_cookie() -> None:
             "https://www.bilibili.com/",
             headers={"User-Agent": UA, "Accept-Language": "zh-CN,zh;q=0.9"},
         )
-        _OPENER.open(req, timeout=15).close()
+        _opener().open(req, timeout=15).close()
     except Exception:
         pass
 
@@ -129,7 +154,7 @@ def _get_mixin_key() -> str:
             "https://api.bilibili.com/x/web-interface/nav",
             headers={"User-Agent": UA, "Referer": "https://www.bilibili.com/"},
         )
-        with _OPENER.open(req, timeout=15) as r:
+        with _opener().open(req, timeout=15) as r:
             j = json.loads(r.read().decode("utf-8", "ignore"))
         wbi = (j.get("data") or {}).get("wbi_img") or {}
         img = str(wbi.get("img_url") or "").rsplit("/", 1)[-1].split(".")[0]
@@ -191,7 +216,7 @@ def qr_login_generate() -> tuple[str, str, str]:
                 "Accept-Language": "zh-CN,zh;q=0.9",
             },
         )
-        with _OPENER.open(req, timeout=25) as r:
+        with _opener().open(req, timeout=25) as r:
             raw = r.read()
             enc = (r.headers.get("Content-Encoding") or "").lower()
         if enc == "gzip":
@@ -226,7 +251,7 @@ def network_diag() -> str:
         try:
             req = urllib.request.Request(u, headers={"User-Agent": UA,
                                                      "Referer": "https://www.bilibili.com/"})
-            with _OPENER.open(req, timeout=20) as r:
+            with _opener().open(req, timeout=20) as r:
                 n = len(r.read())
             lines.append(f"{name}: OK {r.status} {n}B {time.time()-t0:.1f}s")
         except Exception as e:
@@ -246,7 +271,7 @@ def qr_login_poll(qrcode_key: str) -> tuple[int, str]:
             f"{QR_POLL}?{q}",
             headers={"User-Agent": UA, "Referer": "https://www.bilibili.com/"},
         )
-        with _OPENER.open(req, timeout=15) as r:
+        with _opener().open(req, timeout=15) as r:
             j = json.loads(r.read().decode("utf-8", "ignore"))
         d = j.get("data") or {}
         code = int(d.get("code", -1))
@@ -488,7 +513,7 @@ def _http_json(url: str, timeout: int = 15) -> dict[str, Any]:
             "Accept-Language": "zh-CN,zh;q=0.9",
         },
     )
-    with _OPENER.open(req, timeout=timeout) as r:
+    with _opener().open(req, timeout=timeout) as r:
         return json.loads(r.read().decode("utf-8", "ignore"))
 
 

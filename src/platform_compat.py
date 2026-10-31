@@ -59,6 +59,23 @@ def default_output_dir() -> Path:
     return p
 
 
+def ca_bundle() -> Path | None:
+    """CA 证书包。Android 上没有系统证书路径，必须自带一份。"""
+    cands = [PROJ_ROOT / "assets" / "cacert.pem"]
+    try:
+        import certifi  # type: ignore
+        cands.append(Path(certifi.where()))
+    except Exception:
+        pass
+    for c in cands:
+        try:
+            if c.is_file() and c.stat().st_size > 10_000:
+                return c
+        except Exception:
+            continue
+    return None
+
+
 def cookies_file() -> Path | None:
     """用户导入的 cookies.txt。
 
