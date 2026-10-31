@@ -16,7 +16,7 @@ version = 1.0.0
 # ffmpeg 以「伪装成 .so 的可执行文件」放进 nativeLibraryDir：
 # Android 10+ 禁止从 app 私有目录 exec 二进制，只有 lib/ABI/ 允许执行。
 android.add_libs_arm64_v8a = libs/arm64-v8a/*.so
-requirements = python3,kivy==2.3.1,yt-dlp,mutagen,certifi,pyjnius,plyer,android
+requirements = python3,kivy,yt-dlp,mutagen,certifi,pyjnius,plyer,android
 
 orientation = portrait
 fullscreen = 0
@@ -38,4 +38,4 @@ android.wakelock = True
 
 [buildozer]
 log_level = 2
-warn_on_root = 1
+warn_on_root = 0

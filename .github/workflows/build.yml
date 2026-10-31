@@ -8,42 +8,34 @@ on:
 jobs:
   build:
     runs-on: ubuntu-22.04
-    timeout-minutes: 120
+    timeout-minutes: 150
     steps:
       - uses: actions/checkout@v4
 
-      - uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'
-
-      - name: 缓存 buildozer 与 SDK/NDK
+      - name: 缓存 buildozer 工具链（SDK/NDK）
         uses: actions/cache@v4
         with:
           path: |
-            ~/.buildozer
-            ~/.cache/pip
-          key: bz-${{ runner.os }}-${{ hashFiles('buildozer.spec') }}
-          restore-keys: bz-${{ runner.os }}-
+            ~/.buildozer-cache
+          key: bz-docker-${{ hashFiles('buildozer.spec') }}
+          restore-keys: bz-docker-
 
-      - name: 安装系统依赖
+      - name: 准备缓存目录
         run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            git zip unzip openjdk-17-jdk-headless \
-            autoconf automake libtool libltdl-dev pkg-config \
-            zlib1g-dev libncurses-dev libtinfo6 \
-            cmake libffi-dev libssl-dev
+          mkdir -p ~/.buildozer-cache
+          chmod -R 777 ~/.buildozer-cache
 
-      - name: Java 版本确认
-        run: java -version
-
-      - name: 安装 buildozer
-        run: |
-          python -m pip install --upgrade pip setuptools wheel
-          pip install buildozer
-
+      # 用 Kivy 官方维护的镜像：buildozer + p4a + SDK/NDK 版本组合已测试过
       - name: 构建 APK
-        run: buildozer -v android debug
+        run: |
+          docker run --rm --user root \
+            -v "$GITHUB_WORKSPACE":/home/user/hostcwd \
+            -v "$HOME/.buildozer-cache":/root/.buildozer \
+            kivy/buildozer:latest android debug
+
+      - name: 修复文件属主
+        if: always()
+        run: sudo chown -R $(id -u):$(id -g) "$GITHUB_WORKSPACE" || true
 
       - name: 上传 APK
         if: success()
@@ -60,5 +52,4 @@ jobs:
           name: build-log
           path: |
             .buildozer/android/platform/build-*/build/outputs/logs/
-            .buildozer/android/platform/build-*/build.log
           if-no-files-found: ignore
