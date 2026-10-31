@@ -28,6 +28,8 @@ android.ndk = 25b
 android.archs = arm64-v8a
 android.accept_sdk_license = True
 android.allow_backup = True
+# 启动画面（Python 起来之前显示，覆盖最长的等待期）
+android.presplash = assets/presplash.png
 android.presplash_color = #0F1117
 
 # 写 /sdcard/Music 需要「所有文件访问」；自用可行，上架会被 Google 拒
