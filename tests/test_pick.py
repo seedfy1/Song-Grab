@@ -49,15 +49,20 @@ cards = [
     card("【本家投稿】X / r-906", play=500000),
     card("百万级装备听《X》Hi-Res", play=800000),
 ]
-r = pick_card(cards, "X")
+r = pick_card(cards, "X", priority_words=["本家", "百万级装备听", "百万级录音棚听"])
 check("本家压过百万级", r.card.title.startswith("【本家投稿】"), r.card.title)
 
 cards2 = [
     card("百万级装备听《X》Hi-Res", play=300000),
     card("普通搬运 X", play=900000),
 ]
-r2 = pick_card(cards2, "X")
+r2 = pick_card(cards2, "X", priority_words=["百万级装备听"])
 check("百万级压过普通", r2.card.title.startswith("百万级装备听"), r2.card.title)
+
+# 默认优先词为空 → 纯按播放量（候选里没有书名号时）
+cards2b = [card("普通搬运 X", 900000), card("另一个 X", 500000)]
+r2b = pick_card(cards2b, "X")
+check("默认无优先词按播放量", r2b.card.play == 900000, r2b.card.title)
 
 cards3 = [card("普通搬运 X", play=900000), card("另一个 X", play=500000)]
 r3 = pick_card(cards3, "X")
@@ -71,9 +76,27 @@ cards4 = [
 r4 = pick_card(cards4, "X", priority_words=["百万级录音棚听", "本家"])
 check("自定义词条顺序生效", r4.card.title.startswith("百万级录音棚听"), r4.card.title)
 
-# 词条为空 → 退化纯播放量
+# 词条为空 → 书名号优先于纯播放量（标题带《X》更像歌曲本身）
 r5 = pick_card(cards4, "X", priority_words=[])
-check("词条为空退化", r5.card.play == 500000)
+check("书名号优先", "《X》" in r5.card.title, r5.card.title)
+
+# 书名号那条不过门槛时，退回播放量最高
+cards5 = [card("普通搬运 X", 900000), card("某视频《X》", 5000)]
+r5b = pick_card(cards5, "X", priority_words=[], min_play=10000)
+check("书名号过低时退回播放量", r5b.card.play == 900000, r5b.card.title)
+
+# 正则优先词
+cards6 = [card("普通 X", 900000), card("X【Hi-Res】", 100000)]
+r6 = pick_card(cards6, "X", priority_words=[r"(Hi-?res|无损)"])
+check("正则优先词", "Hi-Res" in r6.card.title, r6.card.title)
+
+# 坏正则退回子串，不崩
+r7 = pick_card(cards6, "X", priority_words=["((("])
+check("坏正则不崩", r7.card is not None, r7.reason)
+
+# 空优先词列表里的空串被忽略
+r8 = pick_card(cards6, "X", priority_words=["", "  "])
+check("空词条忽略", r8.card is not None, r8.reason)
 
 # ---------------------------------------------------------------- 过滤
 

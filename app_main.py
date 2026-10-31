@@ -26,7 +26,7 @@ from kivy.properties import BooleanProperty, ListProperty, NumericProperty, Stri
 from kivy.uix.boxlayout import BoxLayout
 from kivy.uix.filechooser import FileChooserListView
 from kivy.uix.modalview import ModalView
-from kivy.uix.screenmanager import ScreenManager, Screen
+from kivy.uix.screenmanager import Screen
 
 HERE = Path(__file__).resolve().parent
 
@@ -152,7 +152,7 @@ class SongGrabApp(App):
         self.sm = root
         Clock.schedule_interval(self._drain, 0.1)
         Clock.schedule_interval(self._watch_cmd, 2.0)
-        Clock.schedule_interval(self._write_status, 1.0)
+        Clock.schedule_interval(self._write_status, 2.0)
         return root
 
     # -------------------------------------------------------------- 事件泵
@@ -228,6 +228,8 @@ class SongGrabApp(App):
             data = json.loads(CMD_FILE.read_text(encoding="utf-8"))
         except Exception:
             return
+        if not isinstance(data, dict):      # 顶层不是对象（比如数组）直接忽略
+            return
         cid = str(data.get("id") or "")
         if not cid or cid == self._cmd_id:
             return
@@ -236,7 +238,11 @@ class SongGrabApp(App):
         ok, msg = True, ""
         try:
             if action == "download":
-                songs = [str(x) for x in (data.get("songs") or []) if str(x).strip()]
+                raw_songs = data.get("songs")
+                if not isinstance(raw_songs, list):
+                    ok, msg = False, "songs 必须是数组"
+                    raw_songs = []
+                songs = [str(x) for x in raw_songs if str(x).strip()]
                 if not songs:
                     ok, msg = False, "songs 为空"
                 else:
@@ -263,6 +269,14 @@ class SongGrabApp(App):
             "id": cid, "action": action, "ok": ok,
             "msg": msg, "at": time.strftime("%H:%M:%S"),
         })
+        # 标记为已消费：否则 App 重启后 _cmd_id 清空，同一条命令会再跑一遍
+        try:
+            CMD_FILE.rename(CMD_FILE.with_suffix(".done"))
+        except Exception:
+            try:
+                CMD_FILE.unlink()
+            except Exception:
+                pass
 
     def _write_status(self, _dt=None):
         self._write_json(STATUS_FILE, {

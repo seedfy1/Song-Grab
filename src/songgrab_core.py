@@ -8,7 +8,6 @@
 
 from __future__ import annotations
 
-import ctypes
 import hashlib
 import http.cookiejar
 import json
@@ -96,7 +95,6 @@ def _opener():
     if _OPENER is None:
         handlers = [urllib.request.HTTPCookieProcessor(_COOKIE_JAR)]
         try:
-            import ssl
             handlers.insert(0, urllib.request.HTTPSHandler(context=_ssl_context()))
         except Exception:
             pass
@@ -734,7 +732,6 @@ def download_audio(bvid: str, workdir: Path, use_cookies: bool = False) -> Path:
         # p4a 环境里 sys.stdout/stderr 不是正常文件对象，yt-dlp 写日志会抛
         # 'str' object has no attribute 'write'，这里彻底切断它的输出通道
         "logger": _QuietLogger(),
-        "noprogress": True,
         "no_color": True,
     }
     # 有用户 cookie 就优先用（登录态能解锁高音质）；否则用会话 buvid3
@@ -1029,6 +1026,12 @@ def process_song(
         net_artist, source = lookup_artist(song)
         if net_artist:
             say("artist", f"网易云：{net_artist}（{source}）")
+        else:
+            # 查询失败（断网/限流/曲库没有）时用本地缓存兜底
+            cached = artists.get(song, "").strip()
+            if cached:
+                artist = cached
+                say("artist", f"联网失败，用缓存曲师：{artist}")
 
     # 已有成品：曲师变了就顺手改名，避免补表后留下旧名字
     existing = find_existing(out_dir, song)

@@ -212,7 +212,7 @@ def ffmpeg_ok() -> tuple[bool, str]:
 # ------------------------------------------------------------------ 打开目录
 
 def _intent_open(uri: str, mime: str | None = None) -> None:
-    from jnius import autoclass, cast  # type: ignore
+    from jnius import autoclass  # type: ignore
     PythonActivity = autoclass("org.kivy.android.PythonActivity")
     Intent = autoclass("android.content.Intent")
     Uri = autoclass("android.net.Uri")
