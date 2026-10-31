@@ -154,6 +154,68 @@ def _wbi_sign(params: dict[str, Any]) -> dict[str, Any]:
     return p
 
 
+QR_GENERATE = "https://passport.bilibili.com/x/passport-login/web/qrcode/generate"
+QR_POLL = "https://passport.bilibili.com/x/passport-login/web/qrcode/poll"
+
+
+def save_login_cookies() -> tuple[bool, str]:
+    """把当前会话 cookie 落盘成 cookies.txt（供下次启动复用）。"""
+    try:
+        rows = ["# Netscape HTTP Cookie File"]
+        for c in _COOKIE_JAR:
+            dom = c.domain if c.domain.startswith(".") else "." + c.domain
+            rows.append("\t".join([
+                dom, "TRUE", c.path or "/", "FALSE",
+                str(int(c.expires or 0)), c.name, str(c.value),
+            ]))
+        if len(rows) <= 1:
+            return False, "会话里没有 cookie"
+        dest = _pc.data_dir() / "cookies.txt"
+        dest.write_text("\n".join(rows) + "\n", encoding="utf-8")
+        has = any(c.name == "SESSDATA" for c in _COOKIE_JAR)
+        return True, ("登录成功，已保存登录态" if has else "已保存，但没拿到 SESSDATA")
+    except Exception as e:
+        return False, f"保存失败：{e}"
+
+
+def qr_login_generate() -> tuple[str, str]:
+    """生成扫码登录二维码。返回 (扫码链接, qrcode_key)。"""
+    _boot_cookie()
+    try:
+        req = urllib.request.Request(
+            QR_GENERATE,
+            headers={"User-Agent": UA, "Referer": "https://www.bilibili.com/"},
+        )
+        with _OPENER.open(req, timeout=15) as r:
+            j = json.loads(r.read().decode("utf-8", "ignore"))
+        d = j.get("data") or {}
+        return str(d.get("url") or ""), str(d.get("qrcode_key") or "")
+    except Exception:
+        return "", ""
+
+
+def qr_login_poll(qrcode_key: str) -> tuple[int, str]:
+    """轮询扫码状态。0=成功 86101=未扫 86090=待确认 86038=已过期。"""
+    try:
+        q = urllib.parse.urlencode({"qrcode_key": qrcode_key, "source": "main-fe-header"})
+        req = urllib.request.Request(
+            f"{QR_POLL}?{q}",
+            headers={"User-Agent": UA, "Referer": "https://www.bilibili.com/"},
+        )
+        with _OPENER.open(req, timeout=15) as r:
+            j = json.loads(r.read().decode("utf-8", "ignore"))
+        d = j.get("data") or {}
+        code = int(d.get("code", -1))
+        if code == 0:
+            global _USER_COOKIES_LOADED
+            _USER_COOKIES_LOADED = True
+            ok, info = save_login_cookies()
+            return (0, info) if ok else (-2, info)
+        return code, str(d.get("message") or "")
+    except Exception as e:
+        return -1, f"网络异常：{e}"
+
+
 def cookie_header() -> str:
     """当前会话的 Cookie 串，供 yt-dlp 下载时复用。"""
     _boot_cookie()

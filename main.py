@@ -10,6 +10,8 @@ from __future__ import annotations
 
 import os
 import sys
+import threading
+import urllib.parse
 from pathlib import Path
 
 from kivy.app import App
@@ -17,7 +19,7 @@ from kivy.clock import Clock
 from kivy.core.clipboard import Clipboard
 from kivy.core.text import LabelBase
 from kivy.lang import Builder
-from kivy.metrics import dp
+from kivy.metrics import dp, sp
 from kivy.properties import BooleanProperty, ListProperty, NumericProperty, StringProperty
 from kivy.uix.boxlayout import BoxLayout
 from kivy.uix.filechooser import FileChooserListView
@@ -29,6 +31,7 @@ sys.path.insert(0, str(HERE / "src"))
 
 import controller as ctl  # noqa: E402
 import platform_compat as pc  # noqa: E402
+import songgrab_core as core  # noqa: E402
 
 
 # ------------------------------------------------------------------ 中文字体
@@ -226,6 +229,14 @@ class SongGrabApp(App):
 
         threading.Thread(target=_work, daemon=True).start()
 
+    def open_qr_login(self):
+        QRLoginView(self._on_login_done).open()
+
+    def _on_login_done(self, ok: bool, msg: str):
+        self.cookie_hint = pc.cookies_hint()
+        self.status_text = msg
+        core._USER_COOKIES_LOADED = False   # 让下次请求重新加载新 cookie
+
     def ask_storage_permission(self):
         ok, msg = open_all_files_settings()
         self.status_text = msg
@@ -389,6 +400,92 @@ class PromptView(ModalView):
     def _ok(self, *_):
         self._on_ok(self.input.text)
         self.dismiss()
+
+
+class QRLoginView(ModalView):
+    """B 站扫码登录：二维码走在线接口渲染，轮询拿到 cookie 后落盘。"""
+
+    def __init__(self, on_done, **kw):
+        super().__init__(size_hint=(0.92, None), height=dp(500), auto_dismiss=False, **kw)
+        from kivy.uix.button import Button
+        from kivy.uix.image import AsyncImage
+        from kivy.uix.label import Label
+        self._on_done = on_done
+        self._key = ""
+        self._ev = None
+
+        box = BoxLayout(orientation="vertical", padding=dp(12), spacing=dp(8))
+        box.add_widget(Label(text="扫码登录 B 站", font_name=FONT, font_size=sp(18),
+                             size_hint_y=None, height=dp(34)))
+        self.img = AsyncImage(source="", size_hint_y=None, height=dp(300))
+        box.add_widget(self.img)
+        self.status = Label(text="正在获取二维码…", font_name=FONT, font_size=sp(13),
+                            size_hint_y=None, height=dp(40), color=(0.8, 0.82, 0.9, 1))
+        box.add_widget(self.status)
+        row = BoxLayout(size_hint_y=None, height=dp(46), spacing=dp(8))
+        row.add_widget(Button(text="关闭", font_name=FONT,
+                              on_release=lambda *_: self.dismiss()))
+        row.add_widget(Button(text="刷新二维码", font_name=FONT,
+                              on_release=lambda *_: self._reload()))
+        box.add_widget(row)
+        self.add_widget(box)
+        Clock.schedule_once(lambda dt: self._reload(), 0.2)
+
+    def _reload(self, *_):
+        if self._ev:
+            Clock.unschedule(self._ev)
+            self._ev = None
+        self.status.text = "正在获取二维码…"
+        threading.Thread(target=self._gen_worker, daemon=True).start()
+
+    def _gen_worker(self):
+        url, key = core.qr_login_generate()
+        Clock.schedule_once(lambda dt: self._on_gen(url, key), 0)
+
+    def _on_gen(self, url: str, key: str):
+        if not key:
+            self.status.text = "获取失败，检查网络后点「刷新二维码」"
+            return
+        self._key = key
+        q = urllib.parse.quote(url, safe="")
+        self.img.source = ("https://api.qrserver.com/v1/create-qr-code/"
+                           f"?size=300x300&margin=8&data={q}")
+        self.status.text = "用 B 站 App 扫上方二维码"
+        self._ev = Clock.schedule_interval(lambda dt: self._poll(), 2.0)
+
+    def _poll(self):
+        if not self._key:
+            return
+        threading.Thread(target=self._poll_worker, daemon=True).start()
+
+    def _poll_worker(self):
+        code, msg = core.qr_login_poll(self._key)
+        Clock.schedule_once(lambda dt: self._apply(code, msg), 0)
+
+    def _apply(self, code: int, msg: str):
+        if code == 0:
+            if self._ev:
+                Clock.unschedule(self._ev)
+                self._ev = None
+            self.status.text = msg
+            self._on_done(True, msg)
+            Clock.schedule_once(lambda dt: self.dismiss(), 1.2)
+        elif code == 86090:
+            self.status.text = "已扫码，请在手机上点确认"
+        elif code == 86038:
+            if self._ev:
+                Clock.unschedule(self._ev)
+                self._ev = None
+            self.status.text = "二维码已过期，点「刷新二维码」"
+        elif code == -2:
+            self.status.text = msg
+        else:
+            self.status.text = msg or "等待扫码…"
+
+    def on_dismiss(self):
+        if self._ev:
+            Clock.unschedule(self._ev)
+            self._ev = None
 
 
 class PickerView(ModalView):
