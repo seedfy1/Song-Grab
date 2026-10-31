@@ -6,7 +6,7 @@ package.domain = org.fishmusic
 
 # 源码目录与打包进 APK 的文件类型
 source.dir = .
-source.include_exts = py,png,jpg,kv,atlas,ttf,otf,pem
+source.include_exts = py,png,jpg,kv,atlas,ttf,otf,pem,zip
 source.exclude_dirs = tests,bin,.buildozer,__pycache__,.github,.git,libs
 source.exclude_patterns = *.pyc,*.spec.bak,*.md
 

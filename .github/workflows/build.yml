@@ -26,6 +26,14 @@ jobs:
           chmod -R 777 ~/.buildozer-cache
 
       # 用 Kivy 官方维护的镜像：buildozer + p4a + SDK/NDK 版本组合已测试过
+      - name: 生成源码种子包（代码外置用）
+        run: |
+          rm -f assets/seed.zip
+          zip -rq assets/seed.zip app_main.py songgrab.kv src \
+              -x "*/__pycache__/*" "*.pyc"
+          echo "seed.zip: $(du -h assets/seed.zip | cut -f1)"
+          unzip -l assets/seed.zip | tail -3
+
       - name: 构建 APK
         run: |
           docker run --rm --user root \

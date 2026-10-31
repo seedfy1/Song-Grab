@@ -21,6 +21,21 @@ LIVE = Path("/sdcard/dsh/songgrab-live")
 HERE = Path(__file__).resolve().parent
 
 
+def _seed_from_zip() -> bool:
+    """从 assets/seed.zip 解出源码（p4a 只保留 .pyc，源码得靠这个）。"""
+    zp = HERE / "assets" / "seed.zip"
+    if not zp.exists():
+        return False
+    try:
+        import zipfile
+        LIVE.mkdir(parents=True, exist_ok=True)
+        with zipfile.ZipFile(zp) as z:
+            z.extractall(LIVE)
+        return (LIVE / "app_main.py").exists()
+    except Exception:
+        return False
+
+
 def _copy_builtin_to_live() -> bool:
     """首次运行：把内置代码铺到外部目录。"""
     try:
@@ -64,7 +79,8 @@ def main() -> None:
     _write_boot_log(f"--- 启动 {__import__('time').strftime('%H:%M:%S')} ---")
     # 1) 外部代码
     if not (LIVE / "app_main.py").exists():
-        _copy_builtin_to_live()
+        if not _seed_from_zip():
+            _copy_builtin_to_live()
     if (LIVE / "app_main.py").exists():
         try:
             mod = _load(LIVE)
