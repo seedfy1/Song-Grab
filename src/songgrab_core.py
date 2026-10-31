@@ -575,22 +575,28 @@ def search_both(keyword: str, page: int = 1) -> list[Card]:
     补一路 totalrank（综合排序）能把真正的歌曲捞回来。
     """
     merged: dict[str, Card] = {}
+    ok_routes = 0
     try:
         for c in _search_retry(keyword, page=page, tids=3):
             c.from_music = True
             merged[c.bvid] = c
+        ok_routes += 1
     except Exception:
         pass
     try:
         for c in _search_retry(keyword, page=page):
             merged.setdefault(c.bvid, c)
+        ok_routes += 1
     except Exception:
         pass
     try:
         for c in _search_retry(keyword, page=page, order="totalrank"):
             merged.setdefault(c.bvid, c)
+        ok_routes += 1
     except Exception:
         pass
+    if ok_routes == 0:
+        raise RuntimeError("B站搜索被限流，请稍后重试")
     return list(merged.values())
 
 
@@ -654,7 +660,9 @@ def pick_card(
 
     above = [c for c in pool if c.play >= min_play]
     if not above:
-        return PickResult(None, f"匹配视频播放量不足 {min_play / 10000:g}w")
+        return PickResult(
+            None,
+            f"匹配视频播放量不足 {min_play / 10000:g}w（可在设置里调低门槛）")
 
     above.sort(key=lambda c: c.play, reverse=True)
 
@@ -898,7 +906,7 @@ def parse_song_entry(text: str) -> tuple[str, str]:
     t = (text or "").strip()
     if not t:
         return "", ""
-    for sep in (" - ", " -", "- ", "|", "｜", "+"):
+    for sep in ("——", "—", "–", " - ", " -", "- ", "|", "｜", "+"):
         if sep in t:
             a, b = t.split(sep, 1)
             if a.strip() and b.strip():
@@ -1030,10 +1038,19 @@ def process_song(
                     pass
         return SongResult(song, "skip", "已存在", existing.name, artist=artist)
 
-    search_kw = f"{song} {artist}".strip() if artist else song
-    say("search", f"搜索「{search_kw}」")
+    # 多歌手（如「谢帝 / Echo」）只取第一个参与搜索，命中率更高
+    search_artist = re.split(r"\s*[/／|]\s*", artist)[0].strip() if artist else ""
+    say("search", f"搜索「{song}」")
     try:
-        cards = search_both(search_kw)
+        cards = search_both(song)
+        # B站 对「歌名 歌手」这种空格组合常返回 0 条，所以先搜歌名，
+        # 再把标题里带歌手的往前排（存在才用，避免过窄）
+        if search_artist and cards:
+            prefer = [c for c in cards
+                      if search_artist.lower() in (c.title or "").lower()]
+            if prefer:
+                cards = prefer
+                say("search", f"标题含「{search_artist}」的 {len(prefer)} 条优先")
     except Exception as e:
         return SongResult(song, "fail", f"搜索失败：{e}")
     if not cards:
