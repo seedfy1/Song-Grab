@@ -654,17 +654,15 @@ def pick_card(
     if not long_enough:
         return PickResult(None, f"匹配视频都短于 {min_dur}s")
 
-    pool = [c for c in long_enough if c.from_music] if strict_music else long_enough
-    if strict_music and not pool:
-        pool = long_enough  # 分区没结果时退回全量，避免过度过滤
-
-    above = [c for c in pool if c.play >= min_play]
+    # 音乐分区优先，但不再把非分区的结果整体丢掉
+    # （很多正版音源在综合搜索里，只在分区里找会漏掉高播放的版本）
+    above = [c for c in long_enough if c.play >= min_play]
     if not above:
         return PickResult(
             None,
             f"匹配视频播放量不足 {min_play / 10000:g}w（可在设置里调低门槛）")
 
-    above.sort(key=lambda c: c.play, reverse=True)
+    above.sort(key=lambda c: (bool(c.from_music), c.play), reverse=True)
 
     # 优先级词条：按顺序，命中即在该组内取播放量最高（支持正则）
     for w in words:
