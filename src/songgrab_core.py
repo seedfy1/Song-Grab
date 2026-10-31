@@ -603,6 +603,26 @@ class PickResult:
     candidates: list[Card] = field(default_factory=list)
 
 
+_REGEX_HINT = set("|()[]{}+*?^$\\")
+
+
+def _match_word(word: str, title: str) -> bool:
+    """优先词匹配：含正则元字符就按正则，否则按子串。
+
+    这样普通用户写「本家」照样能用，高级用户可写「(Hi-?res|无损)」。
+    正则写坏了自动退回子串，不会静默失效。
+    """
+    w = str(word).strip()
+    if not w:
+        return False
+    if any(ch in _REGEX_HINT for ch in w):
+        try:
+            return re.search(w, title, re.IGNORECASE) is not None
+        except re.error:
+            pass
+    return w.lower() in title.lower()
+
+
 def pick_card(
     cards: list[Card],
     keyword: str,
@@ -638,9 +658,9 @@ def pick_card(
 
     above.sort(key=lambda c: c.play, reverse=True)
 
-    # 优先级词条：按顺序，命中即在该组内取播放量最高
+    # 优先级词条：按顺序，命中即在该组内取播放量最高（支持正则）
     for w in words:
-        group = [c for c in above if w.lower() in c.title.lower()]
+        group = [c for c in above if _match_word(w, c.title)]
         if group:
             return PickResult(group[0], f"命中优先词「{w}」", above[:5])
 
