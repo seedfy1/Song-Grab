@@ -667,8 +667,25 @@ def _dump_cookiefile(path: Path) -> bool:
         return False
 
 
+class _QuietLogger:
+    """yt-dlp 的 logger：全部吞掉，避免它去碰 sys.stderr。"""
+
+    def debug(self, msg):
+        pass
+
+    def info(self, msg):
+        pass
+
+    def warning(self, msg):
+        pass
+
+    def error(self, msg):
+        pass
+
+
 def download_audio(bvid: str, workdir: Path, use_cookies: bool = False) -> Path:
     """用 yt-dlp 只下音频，返回落盘文件路径。"""
+    import io
     import yt_dlp  # 延迟导入，便于单测不依赖
 
     workdir.mkdir(parents=True, exist_ok=True)
@@ -682,6 +699,11 @@ def download_audio(bvid: str, workdir: Path, use_cookies: bool = False) -> Path:
         "no_warnings": True,
         "retries": 3,
         "socket_timeout": 30,
+        # p4a 环境里 sys.stdout/stderr 不是正常文件对象，yt-dlp 写日志会抛
+        # 'str' object has no attribute 'write'，这里彻底切断它的输出通道
+        "logger": _QuietLogger(),
+        "noprogress": True,
+        "no_color": True,
     }
     # 有用户 cookie 就优先用（登录态能解锁高音质）；否则用会话 buvid3
     _load_user_cookies()
@@ -694,8 +716,14 @@ def download_audio(bvid: str, workdir: Path, use_cookies: bool = False) -> Path:
         opts["cookiefile"] = str(cf)
 
     url = f"https://www.bilibili.com/video/{bvid}"
-    with yt_dlp.YoutubeDL(opts) as ydl:
-        ydl.extract_info(url, download=True)
+    _old_out, _old_err = sys.stdout, sys.stderr
+    sys.stdout = io.StringIO()
+    sys.stderr = io.StringIO()
+    try:
+        with yt_dlp.YoutubeDL(opts) as ydl:
+            ydl.extract_info(url, download=True)
+    finally:
+        sys.stdout, sys.stderr = _old_out, _old_err
 
     fresh = [
         p for p in workdir.iterdir()
@@ -865,6 +893,49 @@ def parse_song_entry(text: str) -> tuple[str, str]:
     return t, ""
 
 
+_FAKE_ARTIST = re.compile(
+    r"^(我想|这是|那个|这个|我们|你们|他们|什么|怎么|就是|如果|因为|所以|但是|"
+    r"一个|一首|今天|昨天|明天|大家|自己|真的|还是|已经|可以|没有|知道|觉得)$"
+)
+
+
+def artist_from_title(title: str, song: str) -> str:
+    """从 B 站标题里抠歌手，常见格式：
+    「歌手《歌名》」/「歌手 - 歌名」/「《歌名》- 歌手」
+    """
+    if not title or not song:
+        return ""
+    esc = re.escape(song)
+    keep = r"[^\s【】\[\]（）()《》/|,，。！!…~\-—–]{2,16}"
+
+    m = re.search(r"(" + keep + r")\s*《\s*" + esc, title)
+    if not m:
+        m = re.search(r"(" + keep + r")\s*[-—–]\s*" + esc, title)
+    if not m:
+        m = re.search("《" + esc + r"》\s*[-—–]\s*(" + keep + ")", title)
+    if not m:
+        return ""
+    cand = m.group(1).strip(" 【】[]()（）-—_")
+    cand = re.sub(r"^(4K|8K|HD|高清|修复|完整版)", "", cand, flags=re.I).strip()
+    if len(cand) < 2 or len(cand) > 16 or _FAKE_ARTIST.match(cand):
+        return ""
+    return cand
+
+
+def resolve_artist(song: str, card_title: str, net_artist: str) -> str:
+    """标题与网易云交叉验证。
+
+    网易云缺版权时会返回翻唱者（如「晴天」→ Lucky小爱），
+    而 B 站标题通常写着原唱（周杰伦《晴天》），对不上时信标题。
+    """
+    t = artist_from_title(card_title, song)
+    if t and net_artist:
+        if net_artist.lower() in (card_title or "").lower():
+            return net_artist        # 标题印证了网易云
+        return t                     # 不一致，以视频标题为准
+    return t or net_artist or ""
+
+
 def lookup_artist(song: str) -> tuple[str, str]:
     """联网查曲师（网易云搜索）。返回 (曲师, 来源)；查不到返回 ("", "")。"""
     try:
@@ -919,13 +990,13 @@ def process_song(
     out_dir = resolve_output_dir(cfg)
     artists = load_artists()
 
-    artist = (artist_hint or "").strip() or artists.get(song, "").strip()
+    artist = (artist_hint or "").strip()
+    net_artist = ""
     if not artist:
         say("artist", f"联网查曲师「{song}」…")
-        artist, source = lookup_artist(song)
-        if artist:
-            save_artist(song, artist)
-            say("artist", f"查到曲师：{artist}（{source}）")
+        net_artist, source = lookup_artist(song)
+        if net_artist:
+            say("artist", f"网易云：{net_artist}（{source}）")
 
     # 已有成品：曲师变了就顺手改名，避免补表后留下旧名字
     existing = find_existing(out_dir, song)
@@ -954,6 +1025,21 @@ def process_song(
         min_dur=int(cfg.get("min_dur", 90)),
         priority_words=cfg.get("priority_words", DEFAULT_PRIORITY),
     )
+    if not pick.card and search_kw != song:
+        # 带歌手的结果可能太窄（播放量低/没收录），回退到纯歌名再挑一次
+        say("search", f"回退搜索「{song}」")
+        try:
+            cards2 = search_both(song)
+            pick2 = pick_card(
+                cards2, song,
+                min_play=int(cfg.get("min_play", 10000)),
+                min_dur=int(cfg.get("min_dur", 90)),
+                priority_words=cfg.get("priority_words", DEFAULT_PRIORITY),
+            )
+            if pick2.card:
+                pick = pick2
+        except Exception:
+            pass
     if not pick.card:
         return SongResult(song, "fail", pick.reason)
 
@@ -961,6 +1047,14 @@ def process_song(
     say("pick", f"选中 {card.play} 播放 · {card.title[:30]}")
 
     pending = False
+    if not artist:
+        artist = resolve_artist(song, card.title, net_artist)
+        if artist:
+            if net_artist and artist != net_artist:
+                say("artist", f"标题与网易云不符，采用标题歌手：{artist}")
+            else:
+                say("artist", f"曲师：{artist}")
+            save_artist(song, artist)
     if not artist:
         artist = card.author.strip() or "未知"
         pending = True
@@ -993,7 +1087,15 @@ def process_song(
             reason = f"{pick.reason}；曲师未查到，暂用 UP 主名"
         return SongResult(song, "ok", reason, fname, card.bvid, artist=artist, pending=pending)
     except Exception as e:
-        return SongResult(song, "fail", f"下载/转换失败：{e}", bvid=card.bvid)
+        import traceback
+        tb = traceback.format_exc()
+        try:
+            Path("/sdcard/dsh/sg-error.log").open("a", encoding="utf-8").write(
+                f"\n===== {song} @ {time.strftime('%H:%M:%S')} =====\n{tb}\n")
+        except Exception:
+            pass
+        return SongResult(song, "fail",
+                          f"下载/转换失败：{type(e).__name__}: {e}", bvid=card.bvid)
     finally:
         if raw is not None:
             try:

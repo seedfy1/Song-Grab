@@ -83,7 +83,7 @@
                 font_name: app.font_name
                 font_size: sp(14)
                 multiline: True
-                hint_text: '一行一首，粘贴歌单…'
+                hint_text: '一行一首，建议写成「歌名 歌手」…'
                 background_color: 0.13, 0.14, 0.18, 1
                 foreground_color: 0.92, 0.93, 0.96, 1
                 cursor_color: 0.9, 0.9, 1, 1
@@ -112,6 +112,18 @@
                     background_normal: ''
                     background_color: 0.20, 0.35, 0.55, 1
                     on_release: app.try_search()
+
+        Label:
+            text: '提示：写成「歌名 歌手」更准，如 晴天 周杰伦；冷门歌可到设置里调低播放量门槛'
+            font_name: app.font_name
+            font_size: sp(10)
+            color: 0.48, 0.50, 0.58, 1
+            size_hint_y: None
+            height: dp(17)
+            halign: 'left'
+            valign: 'middle'
+            text_size: self.width, None
+            shorten: True
 
         # ---------- 输出去向 ----------
         BoxLayout:
@@ -279,9 +291,11 @@
             Label:
                 text: '最低播放量'
                 font_name: app.font_name
-                font_size: sp(13)
+                font_size: sp(12)
                 color: 0.65, 0.67, 0.75, 1
-                size_hint_x: 0.5
+                size_hint_x: 0.42
+                halign: 'left'
+                text_size: self.width, None
             TextInput:
                 id: play_input
                 font_name: app.font_name
