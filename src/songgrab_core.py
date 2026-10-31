@@ -552,6 +552,22 @@ def search_page(keyword: str, page: int = 1, order: str = "click", tids: int | N
     return [c for c in cards if c.bvid]
 
 
+def _search_retry(keyword: str, page: int = 1, tids: int | None = None,
+                  order: str = "click", tries: int = 3) -> list[Card]:
+    """单路搜索失败重试（412 风控是间歇性的，等一两秒往往就过）。"""
+    last = None
+    for i in range(tries):
+        try:
+            return search_page(keyword, page=page, tids=tids, order=order)
+        except Exception as e:
+            last = e
+            if i < tries - 1:
+                time.sleep(1.2 * (i + 1))
+    if last:
+        raise last
+    return []
+
+
 def search_both(keyword: str, page: int = 1) -> list[Card]:
     """综合 + 音乐分区 + 相关性排序，三路合并去重。
 
@@ -560,18 +576,18 @@ def search_both(keyword: str, page: int = 1) -> list[Card]:
     """
     merged: dict[str, Card] = {}
     try:
-        for c in search_page(keyword, page=page, tids=3):
+        for c in _search_retry(keyword, page=page, tids=3):
             c.from_music = True
             merged[c.bvid] = c
     except Exception:
         pass
     try:
-        for c in search_page(keyword, page=page):
+        for c in _search_retry(keyword, page=page):
             merged.setdefault(c.bvid, c)
     except Exception:
         pass
     try:
-        for c in search_page(keyword, page=page, order="totalrank"):
+        for c in _search_retry(keyword, page=page, order="totalrank"):
             merged.setdefault(c.bvid, c)
     except Exception:
         pass
@@ -823,6 +839,32 @@ class SongResult:
 NETEASE_SEARCH = "https://music.163.com/api/search/get"
 
 
+def parse_song_entry(text: str) -> tuple[str, str]:
+    """把输入拆成 (歌名, 歌手提示)。
+
+    支持：
+      "童话 光良" / "童话-光良" / "童话 - 光良" / "Hello Adele"
+    不拆：
+      "Shape of You"（三个词且全英文，歌名本身带空格）
+    """
+    t = (text or "").strip()
+    if not t:
+        return "", ""
+    for sep in (" - ", " -", "- ", "|", "｜", "+"):
+        if sep in t:
+            a, b = t.split(sep, 1)
+            if a.strip() and b.strip():
+                return a.strip(), b.strip()
+    parts = t.split()
+    if len(parts) == 2:
+        return parts[0], parts[1]
+    if len(parts) > 2:
+        cn = [bool(re.search(r"[\u4e00-\u9fff]", p)) for p in parts]
+        if all(cn):          # 全中文，多词也拆
+            return " ".join(parts[:-1]), parts[-1]
+    return t, ""
+
+
 def lookup_artist(song: str) -> tuple[str, str]:
     """联网查曲师（网易云搜索）。返回 (曲师, 来源)；查不到返回 ("", "")。"""
     try:
@@ -833,7 +875,7 @@ def lookup_artist(song: str) -> tuple[str, str]:
             NETEASE_SEARCH, data=body,
             headers={"User-Agent": UA, "Referer": "https://music.163.com/"},
         )
-        with urllib.request.urlopen(req, timeout=12) as r:
+        with _opener().open(req, timeout=12) as r:
             data = json.loads(r.read().decode("utf-8", "ignore"))
         songs = ((data.get("result") or {}).get("songs") or [])[:5]
         nb = normalize(song)
@@ -870,13 +912,14 @@ def process_song(
     cfg: dict[str, Any],
     workdir: Path,
     progress=None,
+    artist_hint: str = "",
 ) -> SongResult:
     """处理单首歌。曲师查不到时也下载，用 UP 主名占位并标记 pending。"""
     say = progress or (lambda *a, **k: None)
     out_dir = resolve_output_dir(cfg)
     artists = load_artists()
 
-    artist = artists.get(song, "").strip()
+    artist = (artist_hint or "").strip() or artists.get(song, "").strip()
     if not artist:
         say("artist", f"联网查曲师「{song}」…")
         artist, source = lookup_artist(song)
@@ -896,9 +939,10 @@ def process_song(
                     pass
         return SongResult(song, "skip", "已存在", existing.name, artist=artist)
 
-    say("search", f"搜索「{song}」")
+    search_kw = f"{song} {artist}".strip() if artist else song
+    say("search", f"搜索「{search_kw}」")
     try:
-        cards = search_both(song)
+        cards = search_both(search_kw)
     except Exception as e:
         return SongResult(song, "fail", f"搜索失败：{e}")
     if not cards:

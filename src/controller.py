@@ -91,17 +91,22 @@ class Controller:
         try:
             out_dir = core.resolve_output_dir(cfg)
             workdir = self.workdir()
-            for i, song in enumerate(songs, 1):
+            for i, raw in enumerate(songs, 1):
                 if self.stop_flag.is_set():
                     self._emit(Event("stopped", stats={"ok": ok, "skip": skip, "fail": fail}))
                     return
+                # 支持「歌名 歌手」写法：歌名用于选片与命名，歌手提示用于精确搜索
+                song, hint = core.parse_song_entry(raw)
+                if not song:
+                    continue
                 self._emit(Event("start", song=song, index=i, total=total))
 
                 def say(kind: str, msg: str, _song=song) -> None:
                     self._emit(Event("progress", song=_song, msg=str(msg)))
 
                 try:
-                    res = core.process_song(song, cfg, workdir, progress=say)
+                    res = core.process_song(song, cfg, workdir, progress=say,
+                                            artist_hint=hint)
                 except Exception as e:  # 兜底，绝不让线程炸掉
                     self._emit(Event("log", msg=f"{song} 异常：{e}"))
                     fail += 1
