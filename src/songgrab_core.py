@@ -178,20 +178,64 @@ def save_login_cookies() -> tuple[bool, str]:
         return False, f"保存失败：{e}"
 
 
-def qr_login_generate() -> tuple[str, str]:
-    """生成扫码登录二维码。返回 (扫码链接, qrcode_key)。"""
+def qr_login_generate() -> tuple[str, str, str]:
+    """生成扫码登录二维码。返回 (扫码链接, qrcode_key, 错误说明)。"""
     _boot_cookie()
     try:
         req = urllib.request.Request(
             QR_GENERATE,
-            headers={"User-Agent": UA, "Referer": "https://www.bilibili.com/"},
+            headers={
+                "User-Agent": UA,
+                "Referer": "https://www.bilibili.com/",
+                "Accept": "application/json, text/plain, */*",
+                "Accept-Language": "zh-CN,zh;q=0.9",
+            },
         )
-        with _OPENER.open(req, timeout=15) as r:
-            j = json.loads(r.read().decode("utf-8", "ignore"))
+        with _OPENER.open(req, timeout=25) as r:
+            raw = r.read()
+            enc = (r.headers.get("Content-Encoding") or "").lower()
+        if enc == "gzip":
+            import gzip
+            raw = gzip.decompress(raw)
+        elif enc == "deflate":
+            import zlib
+            raw = zlib.decompress(raw, -zlib.MAX_WBITS)
+        j = json.loads(raw.decode("utf-8", "ignore"))
+        if j.get("code") != 0:
+            return "", "", f"接口拒绝：code={j.get('code')} {j.get('message', '')}".strip()
         d = j.get("data") or {}
-        return str(d.get("url") or ""), str(d.get("qrcode_key") or "")
-    except Exception:
-        return "", ""
+        url = str(d.get("url") or "")
+        key = str(d.get("qrcode_key") or "")
+        if not url or not key:
+            return "", "", "返回数据为空（可能被风控）"
+        return url, key, ""
+    except Exception as e:
+        return "", "", f"{type(e).__name__}: {e}"
+
+
+def network_diag() -> str:
+    """设置页「网络诊断」用：逐个探接口，把真实错误暴露出来。"""
+    lines = []
+    targets = [
+        ("B站首页", "https://www.bilibili.com/"),
+        ("扫码接口", QR_GENERATE),
+        ("搜索接口", SEARCH_API + "?search_type=video&keyword=test&page=1"),
+    ]
+    for name, u in targets:
+        t0 = time.time()
+        try:
+            req = urllib.request.Request(u, headers={"User-Agent": UA,
+                                                     "Referer": "https://www.bilibili.com/"})
+            with _OPENER.open(req, timeout=20) as r:
+                n = len(r.read())
+            lines.append(f"{name}: OK {r.status} {n}B {time.time()-t0:.1f}s")
+        except Exception as e:
+            lines.append(f"{name}: {type(e).__name__}: {e}")
+    import ssl
+    lines.append(f"SSL: {ssl.OPENSSL_VERSION}")
+    cf = _pc.cookies_file()
+    lines.append(f"cookie: {cf.name if cf else '无'}")
+    return "\n".join(lines)
 
 
 def qr_login_poll(qrcode_key: str) -> tuple[int, str]:

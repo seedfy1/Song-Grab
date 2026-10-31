@@ -349,6 +349,16 @@
             text_size: self.width, None
 
         Button:
+            text: '网络诊断（出问题点这个）'
+            font_name: app.font_name
+            font_size: sp(12)
+            size_hint_y: None
+            height: dp(40)
+            background_normal: ''
+            background_color: 0.30, 0.30, 0.36, 1
+            on_release: app.run_diag()
+
+        Button:
             text: '扫码登录 B 站（提升音质 / 防限流）'
             font_name: app.font_name
             font_size: sp(12)

@@ -229,6 +229,38 @@ class SongGrabApp(App):
 
         threading.Thread(target=_work, daemon=True).start()
 
+    def run_diag(self):
+        import threading as _th
+        self.status_text = "诊断中…"
+
+        def _work():
+            try:
+                msg = core.network_diag()
+            except Exception as e:
+                msg = f"诊断异常：{e}"
+            Clock.schedule_once(lambda dt: self._show_diag(msg), 0)
+
+        _th.Thread(target=_work, daemon=True).start()
+
+    def _show_diag(self, msg: str):
+        from kivy.uix.label import Label
+        from kivy.uix.scrollview import ScrollView
+        from kivy.uix.boxlayout import BoxLayout as _BL
+        view = ModalView(size_hint=(0.95, 0.7))
+        box = _BL(orientation="vertical", padding=dp(10), spacing=dp(6))
+        sv = ScrollView()
+        box.add_widget(sv)
+        lab = Label(text=msg, font_name=FONT, font_size=sp(11), size_hint_y=None,
+                    halign="left", valign="top", text_size=(dp(300), None))
+        lab.bind(texture_size=lambda i, v: setattr(i, "height", v[1]))
+        sv.add_widget(lab)
+        from kivy.uix.button import Button
+        box.add_widget(Button(text="关闭", font_name=FONT, size_hint_y=None, height=dp(44),
+                              on_release=lambda *_: view.dismiss()))
+        view.add_widget(box)
+        view.open()
+        self.status_text = "诊断完成"
+
     def open_qr_login(self):
         QRLoginView(self._on_login_done).open()
 
@@ -439,12 +471,17 @@ class QRLoginView(ModalView):
         threading.Thread(target=self._gen_worker, daemon=True).start()
 
     def _gen_worker(self):
-        url, key = core.qr_login_generate()
-        Clock.schedule_once(lambda dt: self._on_gen(url, key), 0)
+        try:
+            res = core.qr_login_generate()
+            url, key, err = res if len(res) == 3 else (res[0], res[1], "")
+        except Exception as e:
+            url, key, err = "", "", f"{type(e).__name__}: {e}"
+        Clock.schedule_once(lambda dt: self._on_gen(url, key, err), 0)
 
-    def _on_gen(self, url: str, key: str):
+    def _on_gen(self, url: str, key: str, err: str = ""):
         if not key:
-            self.status.text = "获取失败，检查网络后点「刷新二维码」"
+            self.status.text = f"获取失败：{err}" if err else "获取失败，检查网络"
+            self.status.color = (0.95, 0.45, 0.45, 1)
             return
         self._key = key
         q = urllib.parse.quote(url, safe="")
