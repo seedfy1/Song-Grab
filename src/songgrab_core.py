@@ -670,6 +670,12 @@ def pick_card(
         if group:
             return PickResult(group[0], f"命中优先词「{w}」", above[:5])
 
+    # 标题里以《歌名》形式出现的，通常是歌曲本身而不是同名视频
+    # （「非凡」有 813 万播的华为宣传片，真正的歌是「《非凡》｜ 刘德华」）
+    quoted = [c for c in above if f"《{keyword}》" in c.title or f"「{keyword}」" in c.title]
+    if quoted:
+        return PickResult(quoted[0], "标题含《歌名》", above[:5])
+
     return PickResult(above[0], "播放量最高", above[:5])
 
 
