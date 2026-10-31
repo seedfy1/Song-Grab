@@ -356,7 +356,7 @@ class SongGrabApp(App):
         self.status_text = msg
 
     def ask_add_prio(self):
-        PromptView("添加优先词", lambda w: self.sm.get_screen("settings").add_word(w)).open()
+        PromptView("添加优先词（支持正则）", lambda w: self.sm.get_screen("settings").add_word(w)).open()
 
     def start_download(self, text: str):
         songs = self.ctrl.parse_songs(text)

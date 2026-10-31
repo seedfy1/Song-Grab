@@ -315,6 +315,17 @@
             halign: 'left'
             text_size: self.width, None
 
+        Label:
+            text: '可写正则，例：(Hi-?res|无损)  4K|官方  完整版'
+            font_name: app.font_name
+            font_size: sp(10)
+            color: 0.45, 0.47, 0.55, 1
+            size_hint_y: None
+            height: dp(16)
+            halign: 'left'
+            text_size: self.width, None
+            shorten: True
+
         ScrollView:
             BoxLayout:
                 id: prio_box
