@@ -1140,7 +1140,7 @@ def process_song(
         import traceback
         tb = traceback.format_exc()
         try:
-            Path("/sdcard/dsh/sg-error.log").open("a", encoding="utf-8").write(
+            Path("/sdcard/Music/SongGrab/sg-error.log").open("a", encoding="utf-8").write(
                 f"\n===== {song} @ {time.strftime('%H:%M:%S')} =====\n{tb}\n")
         except Exception:
             pass

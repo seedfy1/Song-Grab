@@ -42,10 +42,13 @@ def _pick_live() -> Path:
 LIVE = _pick_live()
 
 
+LOG_FILE = Path("/sdcard/Music/SongGrab/sg-boot.log")
+
+
 def _early_log(msg: str) -> None:
     try:
-        Path("/sdcard/dsh").mkdir(parents=True, exist_ok=True)
-        with Path("/sdcard/dsh/sg-boot.log").open("a", encoding="utf-8") as f:
+        LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
+        with LOG_FILE.open("a", encoding="utf-8") as f:
             f.write(msg + "\n")
     except Exception:
         pass
@@ -104,12 +107,7 @@ def _load(path: Path):
 
 
 def _write_boot_log(msg: str) -> None:
-    try:
-        p = Path("/sdcard/dsh/sg-boot.log")
-        with p.open("a", encoding="utf-8") as f:
-            f.write(msg + "\n")
-    except Exception:
-        pass
+    _early_log(msg)
 
 
 def main() -> None:

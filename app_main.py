@@ -32,9 +32,10 @@ HERE = Path(__file__).resolve().parent
 
 # ---------------------------------------------------------------- 文件命令通道
 # 我（agent）往 sg-cmd.json 里写指令，App 轮询执行，结果写 sg-result.json。
-CMD_FILE = Path("/sdcard/dsh/sg-cmd.json")
-RES_FILE = Path("/sdcard/dsh/sg-result.json")
-STATUS_FILE = Path("/sdcard/dsh/sg-status.json")
+WORK_DIR = Path("/sdcard/Music/SongGrab")
+CMD_FILE = WORK_DIR / "sg-cmd.json"
+RES_FILE = WORK_DIR / "sg-result.json"
+STATUS_FILE = WORK_DIR / "sg-status.json"
 sys.path.insert(0, str(HERE / "src"))
 
 import controller as ctl  # noqa: E402
