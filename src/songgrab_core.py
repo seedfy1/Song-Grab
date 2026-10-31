@@ -1049,6 +1049,7 @@ def process_song(
         cards = search_both(song)
         # B站 对「歌名 歌手」这种空格组合常返回 0 条，所以先搜歌名，
         # 再把标题里带歌手的往前排（存在才用，避免过窄）
+        cards_all = list(cards)
         if search_artist and cards:
             prefer = [c for c in cards
                       if search_artist.lower() in (c.title or "").lower()]
@@ -1066,21 +1067,18 @@ def process_song(
         min_dur=int(cfg.get("min_dur", 90)),
         priority_words=cfg.get("priority_words", DEFAULT_PRIORITY),
     )
-    if not pick.card and search_kw != song:
-        # 带歌手的结果可能太窄（播放量低/没收录），回退到纯歌名再挑一次
-        say("search", f"回退搜索「{song}」")
-        try:
-            cards2 = search_both(song)
-            pick2 = pick_card(
-                cards2, song,
-                min_play=int(cfg.get("min_play", 10000)),
-                min_dur=int(cfg.get("min_dur", 90)),
-                priority_words=cfg.get("priority_words", DEFAULT_PRIORITY),
-            )
-            if pick2.card:
-                pick = pick2
-        except Exception:
-            pass
+    if not pick.card and len(cards) != len(cards_all):
+        # 歌手过滤把能用的候选筛掉了，退回全部候选再挑一次
+        say("search", "歌手过滤过窄，回退全部候选")
+        pick2 = pick_card(
+            cards_all, song,
+            min_play=int(cfg.get("min_play", 10000)),
+            min_dur=int(cfg.get("min_dur", 90)),
+            priority_words=cfg.get("priority_words", DEFAULT_PRIORITY),
+        )
+        if pick2.card:
+            pick = pick2
+
     if not pick.card:
         return SongResult(song, "fail", pick.reason)
 
