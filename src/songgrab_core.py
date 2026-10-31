@@ -9,12 +9,15 @@
 from __future__ import annotations
 
 import ctypes
+import hashlib
+import http.cookiejar
 import json
 import os
 import re
 import shutil
 import subprocess
 import sys
+import time
 import unicodedata
 import urllib.parse
 import urllib.request
@@ -59,6 +62,78 @@ UA = (
 )
 
 NO_WINDOW = 0x08000000 if os.name == "nt" else 0  # CREATE_NO_WINDOW
+
+# ---------------------------------------------------------------- B 站会话
+# 搜索接口裸请求第 2 次就 412。带上首页发的 buvid3 cookie 并加 wbi 签名后
+# 连续请求稳定通过（实测 5/5 → 10/10）。
+_MIXIN_TAB = [
+    46, 47, 18, 2, 53, 8, 23, 32, 15, 50, 10, 31, 58, 3, 45, 35, 27, 43, 5, 49,
+    33, 9, 42, 19, 29, 28, 14, 39, 12, 38, 41, 13, 37, 48, 7, 16, 24, 55, 40, 61,
+    26, 17, 0, 1, 60, 51, 30, 4, 22, 25, 54, 21, 56, 59, 6, 63, 57, 62, 11, 36,
+    20, 34, 44, 52,
+]
+
+_COOKIE_JAR = http.cookiejar.CookieJar()
+_OPENER = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(_COOKIE_JAR))
+_MIXIN_KEY = ""
+_MIXIN_AT = 0.0
+
+
+def _boot_cookie() -> None:
+    """访问首页拿 buvid3（B 站风控的第一道门槛）。"""
+    if any(c.name == "buvid3" for c in _COOKIE_JAR):
+        return
+    try:
+        req = urllib.request.Request(
+            "https://www.bilibili.com/",
+            headers={"User-Agent": UA, "Accept-Language": "zh-CN,zh;q=0.9"},
+        )
+        _OPENER.open(req, timeout=15).close()
+    except Exception:
+        pass
+
+
+def _get_mixin_key() -> str:
+    """wbi 密钥由 nav 接口的 img_url/sub_url 拼出来，按固定表打乱取前 32 位。"""
+    global _MIXIN_KEY, _MIXIN_AT
+    if _MIXIN_KEY and time.time() - _MIXIN_AT < 3600:
+        return _MIXIN_KEY
+    _boot_cookie()
+    try:
+        req = urllib.request.Request(
+            "https://api.bilibili.com/x/web-interface/nav",
+            headers={"User-Agent": UA, "Referer": "https://www.bilibili.com/"},
+        )
+        with _OPENER.open(req, timeout=15) as r:
+            j = json.loads(r.read().decode("utf-8", "ignore"))
+        wbi = (j.get("data") or {}).get("wbi_img") or {}
+        img = str(wbi.get("img_url") or "").rsplit("/", 1)[-1].split(".")[0]
+        sub = str(wbi.get("sub_url") or "").rsplit("/", 1)[-1].split(".")[0]
+        if img and sub:
+            _MIXIN_KEY = "".join((img + sub)[i] for i in _MIXIN_TAB)[:32]
+            _MIXIN_AT = time.time()
+    except Exception:
+        pass
+    return _MIXIN_KEY
+
+
+def _wbi_sign(params: dict[str, Any]) -> dict[str, Any]:
+    key = _get_mixin_key()
+    p = dict(params)
+    p["wts"] = int(time.time())
+    p = dict(sorted(p.items()))
+    p = {k: "".join(ch for ch in str(v) if ch not in "!'()*") for k, v in p.items()}
+    q = urllib.parse.urlencode(p)
+    if key:
+        p["w_rid"] = hashlib.md5((q + key).encode()).hexdigest()
+    return p
+
+
+def cookie_header() -> str:
+    """当前会话的 Cookie 串，供 yt-dlp 下载时复用。"""
+    _boot_cookie()
+    return "; ".join(f"{c.name}={c.value}" for c in _COOKIE_JAR)
+
 
 DEFAULT_PRIORITY = ["本家", "百万级装备听", "百万级录音棚听"]
 
@@ -273,10 +348,16 @@ class Card:
 
 
 def _http_json(url: str, timeout: int = 15) -> dict[str, Any]:
+    _boot_cookie()
     req = urllib.request.Request(
-        url, headers={"User-Agent": UA, "Referer": "https://search.bilibili.com/"}
+        url,
+        headers={
+            "User-Agent": UA,
+            "Referer": "https://search.bilibili.com/",
+            "Accept-Language": "zh-CN,zh;q=0.9",
+        },
     )
-    with urllib.request.urlopen(req, timeout=timeout) as r:
+    with _OPENER.open(req, timeout=timeout) as r:
         return json.loads(r.read().decode("utf-8", "ignore"))
 
 
@@ -289,7 +370,7 @@ def search_page(keyword: str, page: int = 1, order: str = "click", tids: int | N
     }
     if tids:
         params["tids_1"] = str(tids)
-    url = f"{SEARCH_API}?{urllib.parse.urlencode(params)}"
+    url = f"{SEARCH_API}?{urllib.parse.urlencode(_wbi_sign(params))}"
     data = _http_json(url)
     if data.get("code") != 0:
         raise RuntimeError(f"搜索接口返回 code={data.get('code')} {data.get('message')}")
@@ -381,6 +462,24 @@ def pick_card(
 
 # ---------------------------------------------------------------- 下载与转换
 
+def _dump_cookiefile(path: Path) -> bool:
+    """把会话 cookie 写成 yt-dlp 的 Netscape 格式，下载时复用。"""
+    try:
+        rows = ["# Netscape HTTP Cookie File"]
+        for c in _COOKIE_JAR:
+            dom = c.domain if c.domain.startswith(".") else "." + c.domain
+            rows.append("\t".join([
+                dom, "TRUE", c.path or "/", "FALSE",
+                str(int(c.expires or 0)), c.name, str(c.value),
+            ]))
+        if len(rows) <= 1:
+            return False
+        path.write_text("\n".join(rows) + "\n", encoding="utf-8")
+        return True
+    except Exception:
+        return False
+
+
 def download_audio(bvid: str, workdir: Path, use_cookies: bool = False) -> Path:
     """用 yt-dlp 只下音频，返回落盘文件路径。"""
     import yt_dlp  # 延迟导入，便于单测不依赖
@@ -397,10 +496,14 @@ def download_audio(bvid: str, workdir: Path, use_cookies: bool = False) -> Path:
         "retries": 3,
         "socket_timeout": 30,
     }
-    if use_cookies:
-        cf = _pc.cookies_file()
-        if cf:
-            opts["cookiefile"] = str(cf)
+    # 优先用用户导入的 cookies.txt，否则用当前会话的 buvid3（降低 412 概率）
+    cf = _pc.cookies_file() if use_cookies else None
+    if cf is None:
+        tmp = workdir / ".session_cookies.txt"
+        if _dump_cookiefile(tmp):
+            cf = tmp
+    if cf is not None:
+        opts["cookiefile"] = str(cf)
 
     url = f"https://www.bilibili.com/video/{bvid}"
     with yt_dlp.YoutubeDL(opts) as ydl:
