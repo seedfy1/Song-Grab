@@ -1,6 +1,41 @@
 #:import dp kivy.metrics.dp
 #:import sp kivy.metrics.sp
 
+<SplashScreen>:
+    canvas.before:
+        Color:
+            rgba: 0.058, 0.066, 0.090, 1
+        Rectangle:
+            pos: self.pos
+            size: self.size
+    BoxLayout:
+        orientation: 'vertical'
+        padding: dp(40), dp(80), dp(40), dp(80)
+        Image:
+            source: 'assets/icon.png'
+            size_hint_y: None
+            height: self.width
+            mipmap: True
+        Widget:
+            size_hint_y: 0.12
+        Label:
+            text: '肥鱼音乐'
+            font_name: app.font_name
+            font_size: sp(30)
+            color: 0.90, 0.91, 0.95, 1
+            size_hint_y: None
+            height: dp(48)
+        Label:
+            text: 'SongGrab'
+            font_name: app.font_name
+            font_size: sp(14)
+            color: 0.42, 0.45, 0.55, 1
+            size_hint_y: None
+            height: dp(26)
+        Widget:
+            size_hint_y: 0.18
+
+
 <ResultRow>:
     orientation: 'horizontal'
     size_hint_y: None

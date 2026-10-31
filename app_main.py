@@ -26,7 +26,7 @@ from kivy.properties import BooleanProperty, ListProperty, NumericProperty, Stri
 from kivy.uix.boxlayout import BoxLayout
 from kivy.uix.filechooser import FileChooserListView
 from kivy.uix.modalview import ModalView
-from kivy.uix.screenmanager import Screen
+from kivy.uix.screenmanager import FadeTransition, Screen
 
 HERE = Path(__file__).resolve().parent
 
@@ -105,6 +105,13 @@ def open_all_files_settings() -> tuple[bool, str]:
 
 
 # ------------------------------------------------------------------ 组件
+class SplashScreen(Screen):
+    """启动画面：App 起来先显示这个，再淡入主界面。
+
+    Android 12+ 的系统 SplashScreen 会覆盖掉 presplash，所以在 Kivy 里做一份。
+    """
+
+
 class ResultRow(BoxLayout):
     song = StringProperty("")
     status = StringProperty("")
@@ -148,12 +155,25 @@ class SongGrabApp(App):
         # 这两项都涉及子进程/文件 IO，挪到设置页再检测，启动不为它们等待
         self.ffmpeg_hint = ""
         self.cookie_hint = ""
-        root = Builder.load_string("ScreenManager:\n    MainScreen:\n        name: 'main'\n    SettingsScreen:\n        name: 'settings'\n")
+        root = Builder.load_string(
+            "ScreenManager:\n"
+            "    SplashScreen:\n        name: 'splash'\n"
+            "    MainScreen:\n        name: 'main'\n"
+            "    SettingsScreen:\n        name: 'settings'\n")
         self.sm = root
         Clock.schedule_interval(self._drain, 0.1)
         Clock.schedule_interval(self._watch_cmd, 2.0)
         Clock.schedule_interval(self._write_status, 2.0)
+        # 启动画面停 0.9 秒，然后淡入主界面
+        Clock.schedule_once(self._leave_splash, 0.9)
         return root
+
+    def _leave_splash(self, _dt):
+        try:
+            self.sm.transition = FadeTransition(duration=0.35)
+            self.sm.current = "main"
+        except Exception:
+            pass
 
     # -------------------------------------------------------------- 事件泵
     def _drain(self, _dt):
