@@ -17,8 +17,29 @@ import sys
 import traceback
 from pathlib import Path
 
-LIVE = Path("/sdcard/dsh/songgrab-live")
 HERE = Path(__file__).resolve().parent
+
+# 代码目录必须放在 App 有权限访问的位置。
+# /sdcard/dsh 的权限是 drwxrws---（others 无权限），App 读不到 → PermissionError。
+# Media 目录（Music/Download 等）对 App 是有特殊通道的，放这里双方都能读写。
+LIVE_CANDIDATES = [
+    Path("/sdcard/Music/SongGrab/code"),
+    Path("/sdcard/Download/songgrab-code"),
+    Path("/sdcard/dsh/songgrab-live"),
+]
+
+
+def _pick_live() -> Path:
+    for c in LIVE_CANDIDATES:
+        try:
+            if (c / "app_main.py").exists():
+                return c
+        except Exception:
+            continue
+    return LIVE_CANDIDATES[0]
+
+
+LIVE = _pick_live()
 
 
 def _early_log(msg: str) -> None:
