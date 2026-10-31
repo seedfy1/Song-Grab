@@ -329,6 +329,16 @@
                 on_release: root.reset_words()
 
         Label:
+            text: app.cookie_hint
+            font_name: app.font_name
+            font_size: sp(11)
+            color: (0.45, 0.75, 0.55, 1) if '已导入' in app.cookie_hint else (0.75, 0.6, 0.35, 1)
+            size_hint_y: None
+            height: dp(20)
+            halign: 'left'
+            text_size: self.width, None
+
+        Label:
             text: app.ffmpeg_hint
             font_name: app.font_name
             font_size: sp(11)

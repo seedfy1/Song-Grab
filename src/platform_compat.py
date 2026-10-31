@@ -60,9 +60,44 @@ def default_output_dir() -> Path:
 
 
 def cookies_file() -> Path | None:
-    """手动导入的 cookies.txt（Android 上没有浏览器 cookie 解密能力）。"""
-    p = data_dir() / "cookies.txt"
-    return p if p.exists() and p.stat().st_size > 0 else None
+    """用户导入的 cookies.txt。
+
+    Android 上放开多个容易访问的位置，避免要求用户往 app 私有目录塞文件。
+    """
+    candidates = [data_dir() / "cookies.txt"]
+    if IS_ANDROID:
+        candidates += [
+            Path("/sdcard/Download/cookies.txt"),
+            Path("/sdcard/cookies.txt"),
+            Path("/storage/emulated/0/Download/cookies.txt"),
+            Path("/sdcard/Android/data/org.fishmusic.songgrab/files/cookies.txt"),
+        ]
+    else:
+        candidates += [
+            Path.home() / "Downloads" / "cookies.txt",
+            Path.home() / "cookies.txt",
+        ]
+    for c in candidates:
+        try:
+            if c.exists() and c.stat().st_size > 200:
+                return c
+        except Exception:
+            continue
+    return None
+
+
+def cookies_hint() -> str:
+    """给 UI 显示当前登录态来源。"""
+    cf = cookies_file()
+    if cf is None:
+        return "未导入登录 cookie（匿名，易限流）"
+    try:
+        text = cf.read_text(encoding="utf-8", errors="ignore")
+        if "SESSDATA" in text:
+            return f"已导入登录 cookie：{cf.name}"
+        return f"已找到 {cf.name}，但里面没有 SESSDATA（可能没导出登录态）"
+    except Exception:
+        return f"已找到 {cf.name}"
 
 
 # ------------------------------------------------------------------ ffmpeg

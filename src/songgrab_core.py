@@ -79,8 +79,33 @@ _MIXIN_KEY = ""
 _MIXIN_AT = 0.0
 
 
+_USER_COOKIES_LOADED = False
+
+
+def _load_user_cookies() -> bool:
+    """载入用户导入的 cookies.txt（登录态），搜索与下载共用。"""
+    global _USER_COOKIES_LOADED
+    if _USER_COOKIES_LOADED:
+        return True
+    _USER_COOKIES_LOADED = True
+    cf = _pc.cookies_file()
+    if cf is None:
+        return False
+    try:
+        jar = http.cookiejar.MozillaCookieJar(str(cf))
+        jar.load(ignore_discard=True, ignore_expires=True)
+        n = 0
+        for c in jar:
+            _COOKIE_JAR.set_cookie(c)
+            n += 1
+        return n > 0
+    except Exception:
+        return False
+
+
 def _boot_cookie() -> None:
-    """访问首页拿 buvid3（B 站风控的第一道门槛）。"""
+    """先载入用户登录 cookie；没有就访问首页拿 buvid3。"""
+    _load_user_cookies()
     if any(c.name == "buvid3" for c in _COOKIE_JAR):
         return
     try:
@@ -496,8 +521,9 @@ def download_audio(bvid: str, workdir: Path, use_cookies: bool = False) -> Path:
         "retries": 3,
         "socket_timeout": 30,
     }
-    # 优先用用户导入的 cookies.txt，否则用当前会话的 buvid3（降低 412 概率）
-    cf = _pc.cookies_file() if use_cookies else None
+    # 有用户 cookie 就优先用（登录态能解锁高音质）；否则用会话 buvid3
+    _load_user_cookies()
+    cf = _pc.cookies_file()
     if cf is None:
         tmp = workdir / ".session_cookies.txt"
         if _dump_cookiefile(tmp):

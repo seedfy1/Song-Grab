@@ -116,6 +116,7 @@ class SongGrabApp(App):
     running = BooleanProperty(False)
     out_dir = StringProperty("")
     ffmpeg_hint = StringProperty("")
+    cookie_hint = StringProperty("")
     failed_songs: list[str] = []
 
     def build(self):
@@ -133,6 +134,7 @@ class SongGrabApp(App):
         self.out_dir = self.cfg.get("output_dir") or str(pc.default_output_dir())
         ok, msg = self.ctrl.ffmpeg_status()
         self.ffmpeg_hint = ("ffmpeg 就绪" if ok else f"ffmpeg 缺失：{msg}")
+        self.cookie_hint = pc.cookies_hint()
         root = Builder.load_string("ScreenManager:\n    MainScreen:\n        name: 'main'\n    SettingsScreen:\n        name: 'settings'\n")
         self.sm = root
         Clock.schedule_interval(self._drain, 0.1)
@@ -307,6 +309,7 @@ class SettingsScreen(Screen):
 
     def on_pre_enter(self):
         app: SongGrabApp = App.get_running_app()  # type: ignore[assignment]
+        app.cookie_hint = pc.cookies_hint()
         self.ids.out_input.text = app.out_dir
         self.ids.play_input.text = str(app.cfg.get("min_play", 10000))
         self.prio = list(app.cfg.get("priority_words", ["本家", "百万级装备听", "百万级录音棚听"]))
