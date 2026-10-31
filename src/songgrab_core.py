@@ -553,7 +553,11 @@ def search_page(keyword: str, page: int = 1, order: str = "click", tids: int | N
 
 
 def search_both(keyword: str, page: int = 1) -> list[Card]:
-    """综合 + 音乐分区，合并去重；音乐分区结果打标。"""
+    """综合 + 音乐分区 + 相关性排序，三路合并去重。
+
+    单用「按播放量」排序时，泛词（如「演员」）会被高播放的科普/娱乐视频淹没；
+    补一路 totalrank（综合排序）能把真正的歌曲捞回来。
+    """
     merged: dict[str, Card] = {}
     try:
         for c in search_page(keyword, page=page, tids=3):
@@ -563,6 +567,11 @@ def search_both(keyword: str, page: int = 1) -> list[Card]:
         pass
     try:
         for c in search_page(keyword, page=page):
+            merged.setdefault(c.bvid, c)
+    except Exception:
+        pass
+    try:
+        for c in search_page(keyword, page=page, order="totalrank"):
             merged.setdefault(c.bvid, c)
     except Exception:
         pass
