@@ -21,6 +21,22 @@ LIVE = Path("/sdcard/dsh/songgrab-live")
 HERE = Path(__file__).resolve().parent
 
 
+def _early_log(msg: str) -> None:
+    try:
+        Path("/sdcard/dsh").mkdir(parents=True, exist_ok=True)
+        with Path("/sdcard/dsh/sg-boot.log").open("a", encoding="utf-8") as f:
+            f.write(msg + "\n")
+    except Exception:
+        pass
+
+
+try:
+    import time as _t
+    _early_log(f"[{_t.strftime('%H:%M:%S')}] 启动壳已加载 __name__={__name__} __file__={__file__}")
+except Exception:
+    pass
+
+
 def _seed_from_zip() -> bool:
     """从 assets/seed.zip 解出源码（p4a 只保留 .pyc，源码得靠这个）。"""
     zp = HERE / "assets" / "seed.zip"
@@ -95,5 +111,10 @@ def main() -> None:
     builtin.SongGrabApp().run()
 
 
-if __name__ == "__main__":
+try:
     main()
+except Exception:
+    try:
+        _write_boot_log("main() 崩溃：\n" + __import__("traceback").format_exc())
+    except Exception:
+        pass

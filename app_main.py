@@ -437,7 +437,7 @@ class SettingsScreen(Screen):
         app.cookie_hint = pc.cookies_hint()
         self.ids.out_input.text = app.out_dir
         self.ids.play_input.text = str(app.cfg.get("min_play", 10000))
-        self.prio = list(app.cfg.get("priority_words", ["本家", "百万级装备听", "百万级录音棚听"]))
+        self.prio = list(app.cfg.get("priority_words") or [])
         self.refresh_prio()
 
     def refresh_prio(self):
@@ -475,7 +475,7 @@ class SettingsScreen(Screen):
             self.refresh_prio()
 
     def reset_words(self):
-        self.prio = ["本家", "百万级装备听", "百万级录音棚听"]
+        self.prio = []
         self.refresh_prio()
 
     def save(self):

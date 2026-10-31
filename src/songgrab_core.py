@@ -291,7 +291,7 @@ def cookie_header() -> str:
     return "; ".join(f"{c.name}={c.value}" for c in _COOKIE_JAR)
 
 
-DEFAULT_PRIORITY = ["本家", "百万级装备听", "百万级录音棚听"]
+DEFAULT_PRIORITY: list[str] = []   # 不再预置，交给用户自己配
 
 # 非歌曲类标题黑名单
 TITLE_BLOCK = re.compile(
@@ -334,6 +334,9 @@ DEFAULT_SETTINGS: dict[str, Any] = {
 }
 
 
+_LEGACY_PRIORITY = ["本家", "百万级装备听", "百万级录音棚听"]
+
+
 def load_settings() -> dict[str, Any]:
     cfg = dict(DEFAULT_SETTINGS)
     try:
@@ -343,6 +346,9 @@ def load_settings() -> dict[str, Any]:
                 cfg.update({k: v for k, v in data.items() if k in DEFAULT_SETTINGS})
     except Exception:
         pass
+    # 迁移：旧版预置的三个词条清掉，让用户自己加
+    if cfg.get("priority_words") == _LEGACY_PRIORITY:
+        cfg["priority_words"] = []
     return cfg
 
 
