@@ -9,7 +9,6 @@
 from __future__ import annotations
 
 import hashlib
-import http.cookiejar
 import json
 import os
 import re
@@ -72,10 +71,19 @@ _MIXIN_TAB = [
     20, 34, 44, 52,
 ]
 
-_COOKIE_JAR = http.cookiejar.CookieJar()
+_COOKIE_JAR = None
 _MIXIN_KEY = ""
 _MIXIN_AT = 0.0
 _OPENER = None
+
+
+def _jar():
+    """CookieJar 懒加载：http.cookiejar 导入要 ~330ms，首次用时再导入。"""
+    global _COOKIE_JAR
+    if _COOKIE_JAR is None:
+        import http.cookiejar
+        _COOKIE_JAR = http.cookiejar.CookieJar()
+    return _COOKIE_JAR
 
 
 def _ssl_context():
@@ -93,7 +101,7 @@ def _ssl_context():
 def _opener():
     global _OPENER
     if _OPENER is None:
-        handlers = [urllib.request.HTTPCookieProcessor(_COOKIE_JAR)]
+        handlers = [urllib.request.HTTPCookieProcessor(_jar())]
         try:
             handlers.insert(0, urllib.request.HTTPSHandler(context=_ssl_context()))
         except Exception:
@@ -119,7 +127,7 @@ def _load_user_cookies() -> bool:
         jar.load(ignore_discard=True, ignore_expires=True)
         n = 0
         for c in jar:
-            _COOKIE_JAR.set_cookie(c)
+            _jar().set_cookie(c)
             n += 1
         return n > 0
     except Exception:
@@ -129,7 +137,7 @@ def _load_user_cookies() -> bool:
 def _boot_cookie() -> None:
     """先载入用户登录 cookie；没有就访问首页拿 buvid3。"""
     _load_user_cookies()
-    if any(c.name == "buvid3" for c in _COOKIE_JAR):
+    if any(c.name == "buvid3" for c in _jar()):
         return
     try:
         req = urllib.request.Request(
@@ -185,7 +193,7 @@ def save_login_cookies() -> tuple[bool, str]:
     """把当前会话 cookie 落盘成 cookies.txt（供下次启动复用）。"""
     try:
         rows = ["# Netscape HTTP Cookie File"]
-        for c in _COOKIE_JAR:
+        for c in _jar():
             dom = c.domain if c.domain.startswith(".") else "." + c.domain
             rows.append("\t".join([
                 dom, "TRUE", c.path or "/", "FALSE",
@@ -195,7 +203,7 @@ def save_login_cookies() -> tuple[bool, str]:
             return False, "会话里没有 cookie"
         dest = _pc.data_dir() / "cookies.txt"
         dest.write_text("\n".join(rows) + "\n", encoding="utf-8")
-        has = any(c.name == "SESSDATA" for c in _COOKIE_JAR)
+        has = any(c.name == "SESSDATA" for c in _jar())
         return True, ("登录成功，已保存登录态" if has else "已保存，但没拿到 SESSDATA")
     except Exception as e:
         return False, f"保存失败：{e}"
@@ -286,7 +294,7 @@ def qr_login_poll(qrcode_key: str) -> tuple[int, str]:
 def cookie_header() -> str:
     """当前会话的 Cookie 串，供 yt-dlp 下载时复用。"""
     _boot_cookie()
-    return "; ".join(f"{c.name}={c.value}" for c in _COOKIE_JAR)
+    return "; ".join(f"{c.name}={c.value}" for c in _jar())
 
 
 DEFAULT_PRIORITY: list[str] = []   # 不再预置，交给用户自己配
@@ -683,7 +691,7 @@ def _dump_cookiefile(path: Path) -> bool:
     """把会话 cookie 写成 yt-dlp 的 Netscape 格式，下载时复用。"""
     try:
         rows = ["# Netscape HTTP Cookie File"]
-        for c in _COOKIE_JAR:
+        for c in _jar():
             dom = c.domain if c.domain.startswith(".") else "." + c.domain
             rows.append("\t".join([
                 dom, "TRUE", c.path or "/", "FALSE",

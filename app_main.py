@@ -145,9 +145,9 @@ class SongGrabApp(App):
         request_basic_permissions()
         self.cfg = self.ctrl.load_cfg()
         self.out_dir = self.cfg.get("output_dir") or str(pc.default_output_dir())
-        ok, msg = self.ctrl.ffmpeg_status()
-        self.ffmpeg_hint = ("ffmpeg 就绪" if ok else f"ffmpeg 缺失：{msg}")
-        self.cookie_hint = pc.cookies_hint()
+        # 这两项都涉及子进程/文件 IO，挪到设置页再检测，启动不为它们等待
+        self.ffmpeg_hint = ""
+        self.cookie_hint = ""
         root = Builder.load_string("ScreenManager:\n    MainScreen:\n        name: 'main'\n    SettingsScreen:\n        name: 'settings'\n")
         self.sm = root
         Clock.schedule_interval(self._drain, 0.1)
@@ -449,6 +449,18 @@ class SettingsScreen(Screen):
     def on_pre_enter(self):
         app: SongGrabApp = App.get_running_app()  # type: ignore[assignment]
         app.cookie_hint = pc.cookies_hint()
+        if not app.ffmpeg_hint:
+            app.ffmpeg_hint = "检测中…"
+            threading.Thread(target=self._check_ffmpeg, daemon=True).start()
+
+    def _check_ffmpeg(self):
+        app: SongGrabApp = App.get_running_app()  # type: ignore[assignment]
+        try:
+            ok, msg = app.ctrl.ffmpeg_status()
+            text = "ffmpeg 就绪" if ok else f"ffmpeg 缺失：{msg}"
+        except Exception as e:
+            text = f"ffmpeg 检测失败：{e}"
+        Clock.schedule_once(lambda dt: setattr(app, "ffmpeg_hint", text), 0)
         self.ids.out_input.text = app.out_dir
         self.ids.play_input.text = str(app.cfg.get("min_play", 10000))
         self.prio = list(app.cfg.get("priority_words") or [])
