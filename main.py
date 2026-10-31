@@ -29,17 +29,9 @@ LIVE_CANDIDATES = [
 ]
 
 
-def _pick_live() -> Path:
-    for c in LIVE_CANDIDATES:
-        try:
-            if (c / "app_main.py").exists():
-                return c
-        except Exception:
-            continue
-    return LIVE_CANDIDATES[0]
-
-
-LIVE = _pick_live()
+# 固定用第一个（Media 目录）。先前按「文件存在」挑选，会选中读不了的
+# /sdcard/dsh/songgrab-live，导致既加载失败、又跳过了种子解压。
+LIVE = LIVE_CANDIDATES[0]
 
 
 LOG_FILE = Path("/sdcard/Music/SongGrab/sg-boot.log")

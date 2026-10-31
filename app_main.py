@@ -112,6 +112,9 @@ class SplashScreen(Screen):
     Android 12+ 的系统 SplashScreen 会覆盖掉 presplash，所以在 Kivy 里做一份。
     """
 
+    def on_enter(self):
+        pass
+
 
 class ResultRow(BoxLayout):
     song = StringProperty("")
@@ -166,12 +169,12 @@ class SongGrabApp(App):
         Clock.schedule_interval(self._watch_cmd, 2.0)
         Clock.schedule_interval(self._write_status, 2.0)
         # 启动画面停 0.9 秒，然后淡入主界面
-        Clock.schedule_once(self._leave_splash, 0.9)
+        Clock.schedule_once(self._leave_splash, 1.8)
         return root
 
     def _leave_splash(self, _dt):
         try:
-            self.sm.transition = FadeTransition(duration=0.35)
+            self.sm.transition = FadeTransition(duration=0.45)
             self.sm.current = "main"
         except Exception:
             pass
