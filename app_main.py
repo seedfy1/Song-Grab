@@ -30,6 +30,78 @@ from kivy.uix.screenmanager import FadeTransition, Screen
 
 HERE = Path(__file__).resolve().parent
 
+# ---------------------------------------------------------------- 联网更新
+# 只更新代码（不换 APK）：比对 version.json，不同就拉 seed.zip 覆盖 code 目录。
+UPDATE_VERSION_URLS = [
+    "https://raw.githubusercontent.com/seedfy1/Song-Grab/main/version.json",
+    "https://cdn.jsdelivr.net/gh/seedfy1/Song-Grab@main/version.json",
+]
+UPDATE_SEED_URLS = [
+    "https://raw.githubusercontent.com/seedfy1/Song-Grab/main/assets/seed.zip",
+    "https://cdn.jsdelivr.net/gh/seedfy1/Song-Grab@main/assets/seed.zip",
+]
+CODE_DIR = Path("/sdcard/Music/SongGrab/code")
+
+
+def _http_get(url: str, timeout: int = 15) -> bytes:
+    import ssl
+    import urllib.request
+    ca = pc.ca_bundle()
+    try:
+        ctx = ssl.create_default_context(cafile=str(ca)) if ca else ssl.create_default_context()
+    except Exception:
+        ctx = ssl.create_default_context()
+    req = urllib.request.Request(url, headers={"User-Agent": "SongGrab/1.0"})
+    with urllib.request.urlopen(req, timeout=timeout, context=ctx) as r:
+        return r.read()
+
+
+def check_and_update(code_dir: Path = CODE_DIR) -> tuple[bool, str]:
+    """检查并应用代码更新。返回 (是否更新, 说明)。"""
+    remote = None
+    for u in UPDATE_VERSION_URLS:
+        try:
+            remote = json.loads(_http_get(u, 15).decode("utf-8", "ignore"))
+            break
+        except Exception:
+            continue
+    if not isinstance(remote, dict):
+        return False, ""
+    rv = str(remote.get("build") or "").strip()
+    if not rv:
+        return False, ""
+    vf = code_dir / ".version"
+    local = ""
+    try:
+        if vf.exists():
+            local = vf.read_text(encoding="utf-8").strip()
+    except Exception:
+        pass
+    if rv == local:
+        return False, ""
+
+    data = None
+    for u in UPDATE_SEED_URLS:
+        try:
+            data = _http_get(u, 60)
+            if data and len(data) > 1000:
+                break
+        except Exception:
+            data = None
+    if not data:
+        return False, ""
+    try:
+        import io
+        import zipfile
+        code_dir.mkdir(parents=True, exist_ok=True)
+        with zipfile.ZipFile(io.BytesIO(data)) as z:
+            z.extractall(code_dir)
+        vf.write_text(rv, encoding="utf-8")
+        return True, str(remote.get("note") or rv)
+    except Exception as e:
+        return False, f"解压失败：{e}"
+
+
 HELP_TEXT = """【第一次使用】
 
 1. 打开时允许存储权限
@@ -209,9 +281,20 @@ class SongGrabApp(App):
         Clock.schedule_interval(self._drain, 0.1)
         Clock.schedule_interval(self._watch_cmd, 2.0)
         Clock.schedule_interval(self._write_status, 2.0)
+        threading.Thread(target=self._auto_update, daemon=True).start()
         # 启动画面停 0.9 秒，然后淡入主界面
         Clock.schedule_once(self._leave_splash, 1.8)
         return root
+
+    def _auto_update(self):
+        try:
+            ok, note = check_and_update()
+        except Exception:
+            return
+        if ok:
+            Clock.schedule_once(
+                lambda dt: setattr(self, "status_text",
+                                   f"代码已更新（{note}），重开 App 生效"), 0)
 
     def _leave_splash(self, _dt):
         try:
