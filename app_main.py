@@ -56,6 +56,35 @@ def _http_get(url: str, timeout: int = 15) -> bytes:
         return r.read()
 
 
+def _fetch_seed() -> bytes | None:
+    """下载并校验源码包。
+
+    实测 raw.githubusercontent.com 偶尔返回 HTTP 200 但内容被截断
+    （8937B vs 32971B），所以必须校验 zip 结构，不能只看长度。
+    """
+    import io
+    import zipfile
+    for url in UPDATE_SEED_URLS:
+        for _attempt in range(2):
+            try:
+                data = _http_get(url, 60)
+            except Exception:
+                continue
+            if not data or len(data) < 1000:
+                continue
+            try:
+                with zipfile.ZipFile(io.BytesIO(data)) as z:
+                    names = z.namelist()
+                    if "app_main.py" not in names or "songgrab.kv" not in names:
+                        continue
+                    if z.testzip() is not None:
+                        continue
+                return data
+            except Exception:
+                continue
+    return None
+
+
 def check_and_update(code_dir: Path = CODE_DIR) -> tuple[bool, str]:
     """检查并应用代码更新。返回 (是否更新, 说明)。"""
     remote = None
@@ -80,26 +109,35 @@ def check_and_update(code_dir: Path = CODE_DIR) -> tuple[bool, str]:
     if rv == local:
         return False, ""
 
-    data = None
-    for u in UPDATE_SEED_URLS:
-        try:
-            data = _http_get(u, 60)
-            if data and len(data) > 1000:
-                break
-        except Exception:
-            data = None
+    data = _fetch_seed()
     if not data:
-        return False, ""
+        return False, "下载更新包失败（可稍后重试）"
+    # 先解到临时目录，校验通过再替换，避免半个包把现有代码写坏
+    import io
+    import shutil
+    import tempfile
+    import zipfile
+    tmp = None
     try:
-        import io
-        import zipfile
-        code_dir.mkdir(parents=True, exist_ok=True)
+        tmp = Path(tempfile.mkdtemp(prefix="sg-upd-", dir=str(code_dir.parent)))
         with zipfile.ZipFile(io.BytesIO(data)) as z:
-            z.extractall(code_dir)
+            z.extractall(tmp)
+        if not (tmp / "app_main.py").exists():
+            raise RuntimeError("更新包缺少 app_main.py")
+        code_dir.mkdir(parents=True, exist_ok=True)
+        for item in tmp.iterdir():
+            dest = code_dir / item.name
+            if item.is_dir():
+                shutil.copytree(item, dest, dirs_exist_ok=True)
+            else:
+                shutil.copy2(item, dest)
         vf.write_text(rv, encoding="utf-8")
         return True, str(remote.get("note") or rv)
     except Exception as e:
         return False, f"解压失败：{e}"
+    finally:
+        if tmp is not None:
+            shutil.rmtree(tmp, ignore_errors=True)
 
 
 HELP_TEXT = """【第一次使用】
