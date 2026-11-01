@@ -29,7 +29,7 @@ android.archs = arm64-v8a
 android.accept_sdk_license = True
 android.allow_backup = True
 # 启动画面（Python 起来之前显示，覆盖最长的等待期）
-android.icon.filename = assets/icon.png
+android.icon.filename = %(source.dir)s/assets/icon.png
 android.presplash = assets/presplash.png
 android.presplash_color = #0F1117
 
