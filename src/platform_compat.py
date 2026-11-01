@@ -230,7 +230,25 @@ def open_folder(folder: Path, select_file: Path | None = None) -> tuple[bool, st
         return False, f"目录不可用：{e}"
 
     if IS_ANDROID:
-        # Android 11+ 无法直接用 file:// 拉起浏览器；走系统文件管理器的 documents provider
+        # 1) 先尝试直接定位到目标目录（documents provider 的 document URI）
+        doc_id = ""
+        s_folder = str(folder)
+        for prefix in ("/sdcard/", "/storage/emulated/0/"):
+            if s_folder.startswith(prefix):
+                doc_id = "primary:" + s_folder[len(prefix):]
+                break
+        if doc_id:
+            try:
+                import urllib.parse as _up
+                enc = _up.quote(doc_id, safe="")
+                _intent_open(
+                    f"content://com.android.externalstorage.documents/document/{enc}",
+                    "vnd.android.document/directory",
+                )
+                return True, f"已打开 {folder}"
+            except Exception:
+                pass
+        # 2) 回退到文件管理器根目录
         try:
             _intent_open("content://com.android.externalstorage.documents/root/primary")
             return True, f"已打开文件管理器，请进入 {folder}"

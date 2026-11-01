@@ -29,8 +29,11 @@ android.archs = arm64-v8a
 android.accept_sdk_license = True
 android.allow_backup = True
 # 启动画面（Python 起来之前显示，覆盖最长的等待期）
-android.icon.filename = %(source.dir)s/assets/icon.png
-android.presplash = assets/presplash.png
+# 图标（buildozer 的正确选项名是 icon.filename / presplash.filename）
+icon.filename = %(source.dir)s/assets/icon.png
+icon.adaptive_foreground.filename = %(source.dir)s/assets/icon_fg.png
+icon.adaptive_background.filename = %(source.dir)s/assets/icon_bg.png
+presplash.filename = %(source.dir)s/assets/presplash.png
 android.presplash_color = #0F1117
 
 # 写 /sdcard/Music 需要「所有文件访问」；自用可行，上架会被 Google 拒
