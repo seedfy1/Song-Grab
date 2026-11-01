@@ -801,6 +801,17 @@ def _m4a_tag_pure(src: Path, dst: Path, title: str, artist: str) -> None:
         pass  # 没标签也能听，不让它挡住下载
 
 
+def _m4a_ok(path: Path) -> bool:
+    """成品是否真的可用：存在、不是空壳、能读出时长。"""
+    try:
+        if not path.exists() or path.stat().st_size < 16 * 1024:
+            return False
+        from mutagen.mp4 import MP4
+        return float(MP4(str(path)).info.length) > 0.5
+    except Exception:
+        return False
+
+
 def convert_to_m4a(src: Path, dst: Path, title: str, artist: str) -> None:
     exe = Path(FFMPEG) if FFMPEG else None
     if exe and Path(exe).exists():
@@ -818,7 +829,8 @@ def convert_to_m4a(src: Path, dst: Path, title: str, artist: str) -> None:
             proc = subprocess.run(
                 cmd, capture_output=True, creationflags=NO_WINDOW, timeout=300
             )
-            if proc.returncode == 0:
+            # 有的 ROM 上 ffmpeg 会「返回 0 但产出空文件」，不能只看返回码
+            if proc.returncode == 0 and _m4a_ok(dst):
                 return
             # 非 AAC 源 copy 会失败，转 AAC 再试一次
             cmd2 = [c for c in cmd]
@@ -829,26 +841,34 @@ def convert_to_m4a(src: Path, dst: Path, title: str, artist: str) -> None:
             proc2 = subprocess.run(
                 cmd2, capture_output=True, creationflags=NO_WINDOW, timeout=600
             )
-            if proc2.returncode == 0:
+            if proc2.returncode == 0 and _m4a_ok(dst):
                 return
         except Exception:
             # Android 上可能因 SELinux 禁止 exec（非 nativeLibraryDir）而失败
             pass
     # 兜底：直接落地 + mutagen 写标签，保证下载不因 ffmpeg 不可用而失败
+    try:
+        dst.unlink(missing_ok=True)   # 清掉 ffmpeg 留下的半成品
+    except Exception:
+        pass
     _m4a_tag_pure(src, dst, title, artist)
 
 
 def probe_duration(path: Path) -> float:
     exe = Path(FFMPEG) if FFMPEG else None
     if exe and Path(exe).exists():
-        proc = subprocess.run(
-            [str(exe), "-hide_banner", "-i", str(path)],
-            capture_output=True, creationflags=NO_WINDOW, timeout=60,
-        )
-        text = (proc.stderr or b"").decode("utf-8", "ignore")
-        m = re.search(r"Duration:\s*(\d+):(\d+):([\d.]+)", text)
-        if m:
-            return int(m.group(1)) * 3600 + int(m.group(2)) * 60 + float(m.group(3))
+        try:
+            proc = subprocess.run(
+                [str(exe), "-hide_banner", "-i", str(path)],
+                capture_output=True, creationflags=NO_WINDOW, timeout=60,
+            )
+            text = (proc.stderr or b"").decode("utf-8", "ignore")
+            m = re.search(r"Duration:\s*(\d+):(\d+):([\d.]+)", text)
+            if m:
+                return int(m.group(1)) * 3600 + int(m.group(2)) * 60 + float(m.group(3))
+        except Exception:
+            # 鸿蒙等 ROM 上 exec 可能被拒，直接退回纯 Python 读时长
+            pass
     try:
         from mutagen.mp4 import MP4
         return float(MP4(str(path)).info.length)
