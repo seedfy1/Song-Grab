@@ -912,6 +912,23 @@ def convert_to_m4a(src: Path, dst: Path, title: str, artist: str) -> None:
     _m4a_tag_pure(src, dst, title, artist)
 
 
+def _diag_file(path: Path) -> str:
+    """失败现场诊断：文件头、各解析器结果。"""
+    parts = []
+    try:
+        with path.open("rb") as f:
+            parts.append("head=" + f.read(16).hex())
+    except Exception as e:
+        parts.append(f"head=ERR({type(e).__name__})")
+    try:
+        from mutagen.mp4 import MP4
+        parts.append(f"mut={float(MP4(str(path)).info.length):.2f}")
+    except Exception as e:
+        parts.append(f"mut=ERR({type(e).__name__})")
+    parts.append(f"pure={_mp4_duration_pure(path):.2f}")
+    return " ".join(parts)
+
+
 def probe_duration(path: Path) -> float:
     exe = Path(FFMPEG) if FFMPEG else None
     if exe and Path(exe).exists():
@@ -1213,10 +1230,17 @@ def process_song(
         if dur <= 0:
             src_kb = raw.stat().st_size // 1024 if raw.exists() else -1
             dst_kb = dst.stat().st_size // 1024 if dst.exists() else -1
-            dst.unlink(missing_ok=True)
+            # 保留现场，方便把坏文件捞出来分析
+            bad = dst.with_suffix(".bad.m4a")
+            try:
+                if dst.exists():
+                    dst.replace(bad)
+            except Exception:
+                pass
             raise RuntimeError(
                 f"成品无法读取时长（源 {src_kb}KB / 产物 {dst_kb}KB / "
-                f"ffmpeg {'在' if FFMPEG and Path(FFMPEG).exists() else '不在'}）")
+                f"ffmpeg {'在' if FFMPEG and Path(FFMPEG).exists() else '不在'} / "
+                f"{_diag_file(dst if dst.exists() else bad)}）")
 
         append_catalog(out_dir, {
             "song": song, "file": fname, "title": song, "artist": artist,
