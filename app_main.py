@@ -30,6 +30,47 @@ from kivy.uix.screenmanager import FadeTransition, Screen
 
 HERE = Path(__file__).resolve().parent
 
+HELP_TEXT = """【第一次使用】
+
+1. 打开时允许存储权限
+2. 设置 → 点「授予文件访问权限」→ 开启「所有文件访问」
+   不开这个，歌曲下载不下来
+3. （可选）设置 → 「扫码登录 B 站」
+   登录后音质更高、不容易被限流
+
+【下载歌曲】
+
+粘贴歌名，一行一首 → 点「开始下载」
+成品位置：手机存储 / Music / SongGrab /
+
+【写得更准】
+
+歌名 歌手      例：晴天 周杰伦
+冷门歌请把「最低播放量」调低（默认 1 万，建议 3000 或 1000）
+
+【常见失败】
+
+搜索无结果        → 加上歌手名再试
+播放量不足 1w     → 去设置里调低门槛
+下载/转换失败     → 设置 → 网络诊断，看是哪一环
+选了不相干的内容   → 加上歌手名，或在优先级词里指定
+
+【优先级词】
+
+控制选片偏好，越靠上越优先。
+例：Hi-res        → 优先录音棚/高音质版本
+    (Hi-?res|无损) → 支持正则表达式
+    完整版         → 避开片段
+
+【关于登录】
+
+不登录也能用，只是码率低一些、偶尔被限流。
+登录只存在本机，换手机要重新扫码。
+
+如果网络诊断三项全部失败：
+大概率是没给「所有文件访问」权限，或者手机网络连不上 B 站。
+"""
+
 # ---------------------------------------------------------------- 文件命令通道
 # 我（agent）往 sg-cmd.json 里写指令，App 轮询执行，结果写 sg-result.json。
 WORK_DIR = Path("/sdcard/Music/SongGrab")
@@ -381,6 +422,24 @@ class SongGrabApp(App):
         view.open()
         self.status_text = "诊断完成"
 
+    def show_help(self):
+        from kivy.uix.label import Label
+        from kivy.uix.scrollview import ScrollView
+        from kivy.uix.button import Button
+        view = ModalView(size_hint=(0.95, 0.88))
+        box = BoxLayout(orientation="vertical", padding=dp(14), spacing=dp(8))
+        scroll = ScrollView()
+        lab = Label(text=HELP_TEXT, font_name=FONT, font_size=sp(12),
+                    size_hint_y=None, halign="left", valign="top",
+                    text_size=(dp(320), None), color=(0.86, 0.88, 0.94, 1))
+        lab.bind(texture_size=lambda i, v: setattr(i, "height", v[1]))
+        scroll.add_widget(lab)
+        box.add_widget(scroll)
+        box.add_widget(Button(text="知道了", font_name=FONT, size_hint_y=None,
+                              height=dp(46), on_release=lambda *_: view.dismiss()))
+        view.add_widget(box)
+        view.open()
+
     def open_qr_login(self):
         QRLoginView(self._on_login_done).open()
 
@@ -473,6 +532,11 @@ class SettingsScreen(Screen):
     def on_pre_enter(self):
         app: SongGrabApp = App.get_running_app()  # type: ignore[assignment]
         app.cookie_hint = pc.cookies_hint()
+        # 这些必须在主线程做，之前被误放进 _check_ffmpeg 线程里，进设置页就报错
+        self.ids.out_input.text = app.out_dir
+        self.ids.play_input.text = str(app.cfg.get("min_play", 10000))
+        self.prio = list(app.cfg.get("priority_words") or [])
+        self.refresh_prio()
         if not app.ffmpeg_hint:
             app.ffmpeg_hint = "检测中…"
             threading.Thread(target=self._check_ffmpeg, daemon=True).start()
@@ -485,10 +549,6 @@ class SettingsScreen(Screen):
         except Exception as e:
             text = f"ffmpeg 检测失败：{e}"
         Clock.schedule_once(lambda dt: setattr(app, "ffmpeg_hint", text), 0)
-        self.ids.out_input.text = app.out_dir
-        self.ids.play_input.text = str(app.cfg.get("min_play", 10000))
-        self.prio = list(app.cfg.get("priority_words") or [])
-        self.refresh_prio()
 
     def refresh_prio(self):
         box = self.ids.prio_box
