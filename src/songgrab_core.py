@@ -801,13 +801,71 @@ def _m4a_tag_pure(src: Path, dst: Path, title: str, artist: str) -> None:
         pass  # 没标签也能听，不让它挡住下载
 
 
+def _mp4_duration_pure(path: Path) -> float:
+    """不依赖第三方库，直接读 MP4 的 mvhd box 拿时长。
+
+    鸿蒙等 ROM 上 mutagen 可能导入失败，成品明明完好却被判成「读不出时长」。
+    """
+    try:
+        total = path.stat().st_size
+        with path.open("rb") as f:
+            pos = 0
+            while pos + 8 <= total:
+                f.seek(pos)
+                hdr = f.read(8)
+                if len(hdr) < 8:
+                    break
+                size = int.from_bytes(hdr[0:4], "big")
+                kind = hdr[4:8]
+                if size == 1:
+                    size = int.from_bytes(f.read(8), "big")
+                elif size == 0:
+                    size = total - pos
+                if size < 8:
+                    break
+                if kind == b"moov":
+                    end = pos + size
+                    p2 = pos + 8
+                    while p2 + 8 <= end:
+                        f.seek(p2)
+                        h2 = f.read(8)
+                        if len(h2) < 8:
+                            break
+                        s2 = int.from_bytes(h2[0:4], "big")
+                        t2 = h2[4:8]
+                        if s2 == 1:
+                            s2 = int.from_bytes(f.read(8), "big")
+                        elif s2 == 0:
+                            s2 = end - p2
+                        if t2 == b"mvhd":
+                            body = f.read(min(32, max(0, s2 - 8)))
+                            if len(body) < 20:
+                                return 0.0
+                            if body[0] == 1:
+                                if len(body) < 32:
+                                    return 0.0
+                                ts = int.from_bytes(body[20:24], "big")
+                                dur = int.from_bytes(body[24:32], "big")
+                            else:
+                                ts = int.from_bytes(body[12:16], "big")
+                                dur = int.from_bytes(body[16:20], "big")
+                            return float(dur) / ts if ts else 0.0
+                        if s2 <= 0:
+                            break
+                        p2 += s2
+                    return 0.0
+                pos += size
+    except Exception:
+        return 0.0
+    return 0.0
+
+
 def _m4a_ok(path: Path) -> bool:
     """成品是否真的可用：存在、不是空壳、能读出时长。"""
     try:
         if not path.exists() or path.stat().st_size < 16 * 1024:
             return False
-        from mutagen.mp4 import MP4
-        return float(MP4(str(path)).info.length) > 0.5
+        return _mp4_duration_pure(path) > 0.5
     except Exception:
         return False
 
@@ -871,9 +929,12 @@ def probe_duration(path: Path) -> float:
             pass
     try:
         from mutagen.mp4 import MP4
-        return float(MP4(str(path)).info.length)
+        d = float(MP4(str(path)).info.length)
+        if d > 0:
+            return d
     except Exception:
-        return 0.0
+        pass
+    return _mp4_duration_pure(path)
 
 
 # ---------------------------------------------------------------- 台账
@@ -1150,8 +1211,12 @@ def process_song(
 
         dur = probe_duration(dst)
         if dur <= 0:
+            src_kb = raw.stat().st_size // 1024 if raw.exists() else -1
+            dst_kb = dst.stat().st_size // 1024 if dst.exists() else -1
             dst.unlink(missing_ok=True)
-            raise RuntimeError("成品无法读取时长")
+            raise RuntimeError(
+                f"成品无法读取时长（源 {src_kb}KB / 产物 {dst_kb}KB / "
+                f"ffmpeg {'在' if FFMPEG and Path(FFMPEG).exists() else '不在'}）")
 
         append_catalog(out_dir, {
             "song": song, "file": fname, "title": song, "artist": artist,
