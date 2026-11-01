@@ -303,7 +303,7 @@ DEFAULT_PRIORITY: list[str] = []   # 不再预置，交给用户自己配
 TITLE_BLOCK = re.compile(
     r"(教程|教学|如何|怎么|手书|攻略|实况|通关|记录|谱面|自制谱|全连|首杀|"
     r"理论值|解说|混剪|AMV|MAD|歌ってみた|翻唱|cover|reaction|合集|十选|"
-    r"排行榜|盘点|chart|anim|animation)",
+    r"排行榜|盘点|chart|anim|animation|预告|宣传片)",
     re.IGNORECASE,
 )
 
@@ -642,6 +642,7 @@ def pick_card(
     min_dur: int = 90,
     priority_words: list[str] | None = None,
     strict_music: bool = True,
+    max_dur: int = 1200,
 ) -> PickResult:
     words = [
         w for w in (DEFAULT_PRIORITY if priority_words is None else priority_words)
@@ -659,6 +660,11 @@ def pick_card(
     long_enough = [c for c in musical if c.duration == 0 or c.duration >= min_dur]
     if not long_enough:
         return PickResult(None, f"匹配视频都短于 {min_dur}s")
+    # 超过 20 分钟的通常是整张专辑/连续剧合集，不是单曲
+    # （Revelation 会被邓紫棋「启示录」57 分钟的 MV 连续剧按播放量压过去）
+    single = [c for c in long_enough if c.duration == 0 or c.duration <= max_dur]
+    if single:
+        long_enough = single
 
     # 音乐分区优先，但不再把非分区的结果整体丢掉
     # （很多正版音源在综合搜索里，只在分区里找会漏掉高播放的版本）
@@ -678,9 +684,14 @@ def pick_card(
 
     # 标题里以《歌名》形式出现的，通常是歌曲本身而不是同名视频
     # （「非凡」有 813 万播的华为宣传片，真正的歌是「《非凡》｜ 刘德华」）
-    quoted = [c for c in above if f"《{keyword}》" in c.title or f"「{keyword}」" in c.title]
-    if quoted:
-        return PickResult(quoted[0], "标题含《歌名》", above[:5])
+    # 只对中文歌名生效：中文标题加书名号很常见，英文标题几乎不加，
+    # 强行套用会让同名的冷门英文歌压过高播放的正式版
+    # （Revelation：LING 4.3 万播带书名号，战双 40.7 万播不带）
+    if re.search(r"[\u4e00-\u9fff]", keyword):
+        quoted = [c for c in above
+                  if f"《{keyword}》" in c.title or f"「{keyword}」" in c.title]
+        if quoted:
+            return PickResult(quoted[0], "标题含《歌名》", above[:5])
 
     return PickResult(above[0], "播放量最高", above[:5])
 
