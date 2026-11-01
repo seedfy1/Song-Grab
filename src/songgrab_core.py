@@ -905,28 +905,23 @@ NETEASE_SEARCH = "https://music.163.com/api/search/get"
 
 
 def parse_song_entry(text: str) -> tuple[str, str]:
-    """把输入拆成 (歌名, 歌手提示)。
+    """把输入拆成 (歌名, 歌手)。
 
-    支持：
-      "童话 光良" / "童话-光良" / "童话 - 光良" / "Hello Adele"
-    不拆：
-      "Shape of You"（三个词且全英文，歌名本身带空格）
+    规则只有一条：**加号分隔**。加号之前是歌名，之后是歌手。
+      "晴天+周杰伦" / "晴天 + 周杰伦" / "晴天＋周杰伦"（全角）
+    其余一律当成完整歌名：
+      "Evans Gambit" / "起风了 - 完整版" / "童话 光良" / "Shape of You"
+
+    这样歌名里自带的空格、破折号、竖线都不会被误判成歌手。
     """
     t = (text or "").strip()
     if not t:
         return "", ""
-    for sep in ("——", "—", "–", " - ", " -", "- ", "|", "｜", "+"):
+    for sep in ("＋", "+"):
         if sep in t:
             a, b = t.split(sep, 1)
             if a.strip() and b.strip():
                 return a.strip(), b.strip()
-    parts = t.split()
-    if len(parts) == 2:
-        return parts[0], parts[1]
-    if len(parts) > 2:
-        cn = [bool(re.search(r"[\u4e00-\u9fff]", p)) for p in parts]
-        if all(cn):          # 全中文，多词也拆
-            return " ".join(parts[:-1]), parts[-1]
     return t, ""
 
 

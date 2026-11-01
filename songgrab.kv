@@ -126,7 +126,7 @@
                 font_name: app.font_name
                 font_size: sp(14)
                 multiline: True
-                hint_text: '一行一首，建议写成「歌名 歌手」…'
+                hint_text: '一行一首。歌名+歌手用加号分隔…'
                 background_color: 0.13, 0.14, 0.18, 1
                 foreground_color: 0.92, 0.93, 0.96, 1
                 cursor_color: 0.9, 0.9, 1, 1
@@ -157,7 +157,7 @@
                     on_release: app.try_search()
 
         Label:
-            text: '提示：写成「歌名 歌手」更准，如 晴天 周杰伦；冷门歌可到设置里调低播放量门槛'
+            text: '提示：歌名+歌手，用加号，如 晴天+周杰伦；不加加号则整串当歌名'
             font_name: app.font_name
             font_size: sp(10)
             color: 0.48, 0.50, 0.58, 1
