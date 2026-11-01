@@ -126,11 +126,22 @@ class Controller:
             self._emit(Event("stopped", stats={"ok": ok, "skip": skip, "fail": fail}))
 
     # ------------------------------------------------------------ 单曲快速检查
-    def probe(self, song: str, cfg: dict[str, Any]) -> str:
-        """同步搜索+选片，只返回一行说明（用于「试搜」按钮）。"""
+    def probe(self, raw: str, cfg: dict[str, Any]) -> str:
+        """同步搜索+选片，只返回一行说明（用于「试搜」按钮）。
+
+        必须与 process_song 走同一套解析，否则会出现
+        「下载选对了、试搜却是另一条」的信息不对称。
+        """
+        song, hint = core.parse_song_entry(raw)
+        if not song:
+            return "先输入歌名"
         cards = core.search_both(song)
         if not cards:
             return "搜索无结果（可能被 B 站限流，稍后重试）"
+        if hint:
+            prefer = [c for c in cards if hint.lower() in (c.title or "").lower()]
+            if prefer:
+                cards = prefer
         pick = core.pick_card(
             cards, song,
             min_play=int(cfg.get("min_play", 10000)),
