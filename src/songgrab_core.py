@@ -823,6 +823,30 @@ def _mp4_duration_pure(path: Path) -> float:
                     size = total - pos
                 if size < 8:
                     break
+                if kind == b"sidx":
+                    # 分片 MP4（B站 DASH 原始流）：moov 的 duration 是 0，
+                    # 真实时长要从 sidx 里把各分片累计起来
+                    body = f.read(max(0, min(size - 8, 8192)))
+                    if len(body) < 22:
+                        return 0.0
+                    ver = body[0]
+                    ts = int.from_bytes(body[8:12], "big")
+                    off = 12
+                    off += 4 if ver == 0 else 8      # earliest_presentation_time
+                    off += 4 if ver == 0 else 8      # first_offset
+                    off += 2                          # reserved
+                    if off + 2 > len(body):
+                        return 0.0
+                    count = int.from_bytes(body[off:off + 2], "big")
+                    off += 2
+                    total = 0
+                    # 每个 reference 12 字节：ref_type+size(4) dur(4) sap(4)
+                    for _ in range(count):
+                        if off + 12 > len(body):
+                            break
+                        total += int.from_bytes(body[off + 4:off + 8], "big")
+                        off += 12
+                    return float(total) / ts if ts else 0.0
                 if kind == b"moov":
                     end = pos + size
                     p2 = pos + 8
@@ -840,20 +864,23 @@ def _mp4_duration_pure(path: Path) -> float:
                         if t2 == b"mvhd":
                             body = f.read(min(32, max(0, s2 - 8)))
                             if len(body) < 20:
-                                return 0.0
+                                break
                             if body[0] == 1:
                                 if len(body) < 32:
-                                    return 0.0
+                                    break
                                 ts = int.from_bytes(body[20:24], "big")
                                 dur = int.from_bytes(body[24:32], "big")
                             else:
                                 ts = int.from_bytes(body[12:16], "big")
                                 dur = int.from_bytes(body[16:20], "big")
-                            return float(dur) / ts if ts else 0.0
+                            val = float(dur) / ts if ts else 0.0
+                            if val > 0:
+                                return val
+                            # 分片 MP4 的 mvhd 时长恒为 0，继续往后找 sidx
+                            break
                         if s2 <= 0:
                             break
                         p2 += s2
-                    return 0.0
                 pos += size
     except Exception:
         return 0.0
