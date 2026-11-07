@@ -276,6 +276,13 @@
                 background_color: 0.25, 0.27, 0.33, 1
                 on_release: app.copy_failed()
             Button:
+                text: ('未确认：跳过' if app.require_confirm else '未确认：也下')
+                font_name: app.font_name
+                font_size: sp(11)
+                background_normal: ''
+                background_color: (0.20, 0.34, 0.28, 1) if app.require_confirm else (0.34, 0.26, 0.20, 1)
+                on_release: app.toggle_require_confirm()
+            Button:
                 text: '清空'
                 font_name: app.font_name
                 font_size: sp(12)

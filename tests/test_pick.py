@@ -1,144 +1,206 @@
-"""选片规则单测（纯 assert，不依赖 pytest）。
+"""选片链回归测试（对应 docs/选片规则_冻结版.md）。
 
-运行：python tests/test_pick.py
+全部用构造的候选，不联网 —— B站接口会风控，测试必须离线可跑。
+跑法：python tests/test_pick.py  或  pytest tests/test_pick.py
 """
-
 import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
-from songgrab_core import (  # noqa: E402
-    Card, pick_card, title_matched, parse_playlist_text, sanitize_filename,
-    parse_duration, normalize,
-)
-
-FAILS = []
+import picker as P  # noqa: E402
 
 
-def check(name, cond, extra=""):
-    if cond:
-        print(f"PASS  {name}")
-    else:
-        print(f"FAIL  {name}  {extra}")
-        FAILS.append(name)
+def C(title, play=100000, duration=240, author="UP", music=True,
+      typeid=3, videos=1):
+    return P.Cand(raw=None, bvid=f"BV{abs(hash(title)) % 10**9:09d}",
+                  title=title, play=play, duration=duration, author=author,
+                  from_music=music, typeid=typeid, videos=videos)
 
 
-def card(title, play=100000, dur=200, bvid="BV1xx", music=True):
-    return Card(bvid=bvid, title=title, play=play, duration=dur, author="up", from_music=music)
+def pick(cards, kw, **kw2):
+    return P.pick(cards, kw, **kw2)
 
 
-# ---------------------------------------------------------------- 相关性
+# ---------------------------------------------------------------- §2.1 匹配
+def test_match_rank():
+    assert P.match_rank("周杰伦《晴天》", "晴天") == 3
+    assert P.match_rank("「晴天」官方MV", "晴天") == 3
+    assert P.match_rank("晴天", "晴天") == 2
+    assert P.match_rank("周杰伦 - 晴天MV", "晴天") == 1
+    assert P.match_rank("周杰伦 - 晴天MV", "晴天 周杰伦") == 0   # 组合词不是歌名
+    assert P.match_rank("今天天气不错", "晴天") == 0
+    assert P.match_rank("", "晴天") == 0
 
-check("完全相等", title_matched("【初音ミク】三日月Step【r-906】", "三日月Step"))
-check("同名不同曲-バベル", not title_matched("【电音部】いただきバベル / 黒鉄たま", "バベル"))
-check("同名不同曲-平気", not title_matched("平気なんですよ本当に / 初音ミク+Sohbana", "平気？"))
-check("多词英文", title_matched("【Daft Punk】Get lucky 1080p", "Get Lucky"))
-check("多词英文2", title_matched("大肥鱼单曲 - Let Me Go 动画PV 【AI MV大赛】", "Let Me Go"))
-check("繁体归一", title_matched("驟雨の狭間 (Rainshower) / Silentroom", "骤雨の狭间"))
-check("无关标题", not title_matched("15天花20万元打造黄金面具", "黄金数"))
 
-# ---------------------------------------------------------------- 数字解析
+def test_shell_of():
+    # 【X】歌名：X 不是歌名/技术词/作者 → 二创壳
+    assert P.shell_of("【鬼畜】晴天", "晴天", "") == "鬼畜"
+    assert P.shell_of("【4K修复】晴天", "晴天", "") is None
+    assert P.shell_of("【晴天】周杰伦", "晴天", "") is None
 
-check("时长 3:10", parse_duration("3:10") == 190)
-check("时长 1:02:03", parse_duration("1:02:03") == 3723)
 
-# ---------------------------------------------------------------- 选片优先级
+def test_kind_of():
+    assert P.kind_of("晴天 钢琴版纯音乐") == 1
+    assert P.kind_of("晴天 cover 翻唱") == 2
+    assert P.kind_of("周杰伦《晴天》官方MV") == 0
 
-cards = [
-    card("【本家投稿】X / r-906", play=500000),
-    card("百万级装备听《X》Hi-Res", play=800000),
-]
-r = pick_card(cards, "X", priority_words=["本家", "百万级装备听", "百万级录音棚听"])
-check("本家压过百万级", r.card.title.startswith("【本家投稿】"), r.card.title)
 
-cards2 = [
-    card("百万级装备听《X》Hi-Res", play=300000),
-    card("普通搬运 X", play=900000),
-]
-r2 = pick_card(cards2, "X", priority_words=["百万级装备听"])
-check("百万级压过普通", r2.card.title.startswith("百万级装备听"), r2.card.title)
+# ---------------------------------------------------------------- §2 硬过滤
+def test_all_covers_rejected():
+    cards = [C("晴天 cover 翻唱"), C("晴天 钢琴版"), C("晴天 纯音乐 钢琴")]
+    r = pick(cards, "晴天")
+    assert r.cand is None, r.reason
+    assert "翻唱" in r.reason or "器乐" in r.reason
 
-# 默认优先词为空 → 纯按播放量（候选里没有书名号时）
-cards2b = [card("普通搬运 X", 900000), card("另一个 X", 500000)]
-r2b = pick_card(cards2b, "X")
-check("默认无优先词按播放量", r2b.card.play == 900000, r2b.card.title)
 
-cards3 = [card("普通搬运 X", play=900000), card("另一个 X", play=500000)]
-r3 = pick_card(cards3, "X")
-check("无优先词取最高播放", r3.card.play == 900000)
+def test_album_and_long_rejected():
+    cards = [C("晴天 整张专辑连播", 500000, 3000),
+             C("周杰伦《晴天》", 80000, 269)]
+    r = pick(cards, "晴天")
+    assert r.cand.title == "周杰伦《晴天》", r.reason
 
-# 词条顺序可自定义：把「百万级录音棚听」提到第一位
-cards4 = [
-    card("【本家投稿】X", play=500000),
-    card("百万级录音棚听《X》", play=300000),
-]
-r4 = pick_card(cards4, "X", priority_words=["百万级录音棚听", "本家"])
-check("自定义词条顺序生效", r4.card.title.startswith("百万级录音棚听"), r4.card.title)
 
-# 词条为空 → 书名号优先于纯播放量（标题带《X》更像歌曲本身）
-r5 = pick_card(cards4, "X", priority_words=[])
-check("书名号优先", "《X》" in r5.card.title, r5.card.title)
+def test_title_block_rejected():
+    cards = [C("晴天 吉他教学", 900000, 600),
+             C("周杰伦《晴天》", 50000, 269)]
+    r = pick(cards, "晴天")
+    assert "教学" not in r.cand.title
 
-# 书名号那条不过门槛时，退回播放量最高
-cards5 = [card("普通搬运 X", 900000), card("某视频《X》", 5000)]
-r5b = pick_card(cards5, "X", priority_words=[], min_play=10000)
-check("书名号过低时退回播放量", r5b.card.play == 900000, r5b.card.title)
 
-# 正则优先词
-cards6 = [card("普通 X", 900000), card("X【Hi-Res】", 100000)]
-r6 = pick_card(cards6, "X", priority_words=[r"(Hi-?res|无损)"])
-check("正则优先词", "Hi-Res" in r6.card.title, r6.card.title)
+def test_duration_window():
+    cards = [C("周杰伦《晴天》", 50000, 30),      # < min_dur
+             C("周杰伦《晴天》完整版", 50000, 900),  # > max_dur
+             C("周杰伦《晴天》", 50000, 269)]
+    r = pick(cards, "晴天", min_dur=50, max_dur=720)
+    assert r.cand.duration == 269
 
-# 坏正则退回子串，不崩
-r7 = pick_card(cards6, "X", priority_words=["((("])
-check("坏正则不崩", r7.card is not None, r7.reason)
 
-# 空优先词列表里的空串被忽略
-r8 = pick_card(cards6, "X", priority_words=["", "  "])
-check("空词条忽略", r8.card is not None, r8.reason)
+def test_clip_rejected():
+    ref = 269
+    cards = [C("晴天 精彩片段", 900000, 60),
+             C("周杰伦《晴天》", 50000, 269)]
+    r = P.pick(cards, "晴天", ref_dur=ref)
+    assert r.cand.duration == 269, r.reason
 
-# ---------------------------------------------------------------- 过滤
 
-r6 = pick_card([card("X 翻唱", 900000)], "X")
-check("排除翻唱", r6.card is None, r6.reason)
+# ---------------------------------------------------------------- §3 评分
+def test_play_floor():
+    assert P._play_floor(0) == 1.0
+    assert P._play_floor(500) == 0.45
+    assert P._play_floor(5000) == 0.65
+    assert P._play_floor(50000) == 1.0
 
-r7 = pick_card([card("X 教程", 900000)], "X")
-check("排除教程", r7.card is None, r7.reason)
 
-r8 = pick_card([card("X", play=5000)], "X", min_play=10000)
-check("播放量门槛", r8.card is None, r8.reason)
+def test_high_play_does_not_beat_title():
+    """播放量不进分：标题干净的 3 万播要压过 500 万播的杂标题。"""
+    hot = C("【鬼畜】晴天 全程高能", 5000000, 200, typeid=21, music=False)
+    clean = C("周杰伦《晴天》", 30000, 269)
+    r = pick([hot, clean], "晴天")
+    assert r.cand.bvid == clean.bvid, r.reason
 
-r9 = pick_card([card("X", dur=30)], "X", min_dur=90)
-check("时长门槛", r9.card is None, r9.reason)
 
-r10 = pick_card([card("完全无关", 900000)], "X")
-check("相关性门槛", r10.card is None, r10.reason)
+def test_music_partition_bonus():
+    a = C("周杰伦《晴天》", 50000, 269, music=True)
+    b = C("周杰伦《晴天》", 50000, 269, music=False, typeid=21)
+    r = pick([b, a], "晴天")
+    assert r.cand.bvid == a.bvid
 
-# ---------------------------------------------------------------- 歌单解析
 
-text = """# 注释行
-1. 三日月Step ✅
-2、 春日寂寞
-- 延误列车
+def test_title_score_range():
+    assert P.title_score("周杰伦《晴天》", 269) == 1.0
+    assert P.title_score("晴天 慢速降调回响", 269) < 1.0
+    assert P.title_score("晴天", 30) < 1.0        # 时长异常
+    s = P.title_score("晴天" + "《x》" * 3, 269)    # 多书名号
+    assert s < 1.0
 
-Get Lucky
-// 也是注释
-"""
-songs = parse_playlist_text(text)
-check("歌单解析", songs == ["三日月Step", "春日寂寞", "延误列车", "Get Lucky"], str(songs))
 
-r11 = pick_card([card("X", play=1000)], "X", min_play=0)
-check("门槛0=不限", r11.card is not None)
+# ---------------------------------------------------------------- §4 优先词
+def test_priority_word():
+    cards = [C("晴天 官方MV", 9000000, 269),
+             C("晴天 演唱会现场版", 10000, 269)]
+    r = pick(cards, "晴天", priority_words=["官方"])
+    assert "官方" in r.cand.title, r.reason
+    # 词条不命中就回到加权排序，不是报错
+    r2 = pick(cards, "晴天", priority_words=["不存在的词"])
+    assert r2.cand is not None and r2.cand.play == 9000000, r2.reason
 
-# ---------------------------------------------------------------- 文件名
 
-check("非法字符清洗", sanitize_filename('a/b:c*d?"e"<f>|g') == "a b c d e f g", sanitize_filename('a/b:c*d?"e"<f>|g'))
-long = "长" * 100
-check("字节截断", len(sanitize_filename(long).encode("utf-8")) <= 120)
+def test_hi_res_stage():
+    """§4 高音质档：音乐分区 + Hi-Res/无损 + 加权 ≥ 第一名 25% → 置顶。"""
+    cards = [C("周杰伦《晴天》", 9000000, 269),
+             C("晴天 Hi-Res 无损 周杰伦", 10000, 269)]
+    r = pick(cards, "晴天")
+    assert "Hi-Res" in r.cand.title, r.reason
 
-print()
-if FAILS:
-    print(f"共 {len(FAILS)} 项失败：{FAILS}")
-    sys.exit(1)
-print("全部通过")
+
+def test_priority_regex_broken_falls_back():
+    cards = [C("周杰伦《晴天》完整版", 50000, 269),
+             C("周杰伦《晴天》", 90000, 269)]
+    r = pick(cards, "晴天", priority_words=["((("])
+    assert r.cand is not None
+
+
+def test_whitelist_direct():
+    cards = [C("JLRS 日落fm｜晴天", 3000, 269, author="JLRS日落fm"),
+             C("周杰伦《晴天》", 9000000, 269)]
+    r = pick(cards, "晴天")
+    assert r.cand.author == "JLRS日落fm", r.reason
+
+
+# ---------------------------------------------------------------- §5 作者链
+def test_choose_prefers_title_author_match():
+    """标题写着别的作者 → 判翻唱跳过；作者对得上就采信。"""
+    pool = [C("某歌手《晴天》", 9000000, 269),
+            C("周杰伦 - 晴天", 50000, 269)]
+    for c in pool:
+        c.score = 1.0
+    cand, who, why = P.choose_card(pool, "晴天", canonical="周杰伦", ref_dur=269)
+    assert cand is not None and who == "周杰伦", why
+    assert "周杰伦" in cand.title
+
+
+def test_choose_no_author_hint_uses_cluster():
+    """没有作者锚点时，靠时长簇的众数作者兜底。"""
+    pool = [C("晴天 现场版", 9000000, 269),
+            C("周杰伦《晴天》", 50000, 266),
+            C("晴天 周杰伦 录音室", 1000, 268)]
+    for c in pool:
+        c.score = 1.0
+    cand, who, why = P.choose_card(pool, "晴天", canonical="", ref_dur=267)
+    assert cand is not None, why
+
+
+def test_choose_skips_conflicting_title_author():
+    pool = [C("周杰伦《晴天》", 100, 269), C("某歌手《晴天》", 100, 269)]
+    cand, who, why = P.choose_card(pool, "晴天", canonical="周杰伦", ref_dur=269)
+    assert cand.title.startswith("周杰伦"), why
+
+
+def test_artists_in_title():
+    assert "周杰伦" in P._artists_in_title("周杰伦《晴天》")
+    assert "周杰伦" in P._artists_in_title("【4K修复】周杰伦 - 晴天MV")
+    assert "周杰伦" in P._artists_in_title("《晴天》- 周杰伦")
+
+
+def test_empty_pool():
+    r = pick([], "晴天")
+    assert r.cand is None and r.reason
+
+
+if __name__ == "__main__":
+    fns = [(n, f) for n, f in sorted(globals().items())
+           if n.startswith("test_") and callable(f)]
+    bad = 0
+    for name, fn in fns:
+        try:
+            fn()
+            print(f"  ok  {name}")
+        except AssertionError as e:
+            bad += 1
+            print(f"  FAIL {name}: {e}")
+        except Exception as e:
+            bad += 1
+            print(f"  ERR  {name}: {type(e).__name__}: {e}")
+    print(f"{len(fns) - bad}/{len(fns)} 通过")
+    sys.exit(1 if bad else 0)

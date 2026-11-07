@@ -70,7 +70,13 @@ class Controller:
         return core.find_existing(out_dir, song)
 
     # ------------------------------------------------------------ 主流程
-    def start(self, songs: list[str], cfg: dict[str, Any]) -> bool:
+    def start(self, songs: list[Any], cfg: dict[str, Any]) -> bool:
+        """songs 里每项可以是字符串，也可以是已确认音源的 dict：
+
+        {"raw": "歌名+作者", "song": "歌名", "hint": "作者",
+         "artist": "确认后的作者", "bvid": "BVxxx"}
+        带 bvid 的直接下载，不再搜索（冻结文档 §8.1）。
+        """
         with self._lock:
             if self.running():
                 return False
@@ -86,16 +92,27 @@ class Controller:
 
     def _run(self, songs: list[str], cfg: dict[str, Any]) -> None:
         total = len(songs)
-        ok = skip = fail = 0
+        ok = skip = fail = confirm = 0
         try:
             out_dir = core.resolve_output_dir(cfg)
             workdir = self.workdir()
-            for i, raw in enumerate(songs, 1):
+            for i, item in enumerate(songs, 1):
                 if self.stop_flag.is_set():
-                    self._emit(Event("stopped", stats={"ok": ok, "skip": skip, "fail": fail}))
+                    self._emit(Event("stopped", stats={
+                        "ok": ok, "skip": skip, "fail": fail, "confirm": confirm}))
                     return
-                # 支持「歌名 歌手」写法：歌名用于选片与命名，歌手提示用于精确搜索
-                song, hint = core.parse_song_entry(raw)
+                bvid = artist = ""
+                if isinstance(item, dict):
+                    raw = str(item.get("raw") or item.get("song") or "")
+                    song = str(item.get("song") or "")
+                    hint = str(item.get("hint") or "")
+                    bvid = str(item.get("bvid") or "")
+                    artist = str(item.get("artist") or "")
+                    if not song:
+                        song, hint = core.parse_song_entry(raw)
+                else:
+                    raw = str(item)
+                    song, hint = core.parse_song_entry(raw)
                 if not song:
                     continue
                 self._emit(Event("start", song=song, index=i, total=total))
@@ -103,9 +120,30 @@ class Controller:
                 def say(kind: str, msg: str, _song=song) -> None:
                     self._emit(Event("progress", song=_song, msg=str(msg)))
 
+                # §8.1：没确认音源就先试搜，未确认的不下载，交给用户点选
+                if not bvid and cfg.get("require_confirm", True):
+                    try:
+                        tr = core.trial_song(
+                            f"{song}+{hint}" if hint else song, cfg, say)
+                    except Exception as e:
+                        tr = {"stage": "fail", "reason": f"试搜失败：{e}"}
+                    if tr.get("stage") == "ok":
+                        bvid = tr.get("bvid") or ""
+                        artist = artist or tr.get("artist") or ""
+                    else:
+                        confirm += 1
+                        res = core.SongResult(
+                            song, "confirm", tr.get("reason") or "待确认",
+                            bvid=tr.get("bvid") or "", artist=tr.get("artist") or "",
+                            title=tr.get("title") or "",
+                            candidates=list(tr.get("candidates") or []))
+                        self._emit(Event("result", song=song, result=res,
+                                         index=i, total=total))
+                        continue
+
                 try:
                     res = core.process_song(song, cfg, workdir, progress=say,
-                                            artist_hint=hint)
+                                            artist_hint=hint, bvid=bvid, artist=artist)
                 except Exception as e:  # 兜底，绝不让线程炸掉
                     self._emit(Event("log", msg=f"{song} 异常：{e}"))
                     fail += 1
@@ -119,39 +157,29 @@ class Controller:
                     fail += 1
                 self._emit(Event("result", song=song, result=res, index=i, total=total))
 
-            self._emit(Event("done", stats={"ok": ok, "skip": skip, "fail": fail},
-                             msg=str(out_dir)))
+            self._emit(Event("done", stats={
+                "ok": ok, "skip": skip, "fail": fail, "confirm": confirm},
+                msg=str(out_dir)))
         except Exception as e:
             self._emit(Event("log", msg=f"任务异常终止：{e}"))
-            self._emit(Event("stopped", stats={"ok": ok, "skip": skip, "fail": fail}))
+            self._emit(Event("stopped", stats={
+                "ok": ok, "skip": skip, "fail": fail, "confirm": confirm}))
 
     # ------------------------------------------------------------ 单曲快速检查
-    def probe(self, raw: str, cfg: dict[str, Any]) -> str:
-        """同步搜索+选片，只返回一行说明（用于「试搜」按钮）。
+    def trial(self, raw: str, cfg: dict[str, Any]) -> dict[str, Any]:
+        """同步跑 §8 试搜链，返回 trial_song 的 dict（三档 + 候选）。"""
+        return core.trial_song(raw, cfg)
 
-        必须与 process_song 走同一套解析，否则会出现
-        「下载选对了、试搜却是另一条」的信息不对称。
-        """
-        song, hint = core.parse_song_entry(raw)
-        if not song:
-            return "先输入歌名"
-        cards = core.search_both(song)
-        if not cards:
-            return "搜索无结果（可能被 B 站限流，稍后重试）"
-        if hint:
-            prefer = [c for c in cards if hint.lower() in (c.title or "").lower()]
-            if prefer:
-                cards = prefer
-        pick = core.pick_card(
-            cards, song,
-            min_play=int(cfg.get("min_play", 10000)),
-            min_dur=int(cfg.get("min_dur", 90)),
-            priority_words=cfg.get("priority_words", core.DEFAULT_PRIORITY),
-        )
-        if not pick.card:
-            return f"未选中：{pick.reason}"
-        c = pick.card
-        return f"将选：{c.title[:40]} · {c.play} 播 · {c.duration}s（{pick.reason}）"
+    def probe(self, raw: str, cfg: dict[str, Any]) -> str:
+        """一行说明（兼容旧调用）：把 trial 结果压成文字。"""
+        tr = self.trial(raw, cfg)
+        if tr["stage"] == "fail":
+            return f"未选中：{tr['reason']}"
+        c = tr["candidates"][0] if tr["candidates"] else {}
+        head = "已命中" if tr["stage"] == "ok" else "待确认"
+        return (f"{head}：{str(c.get('title', ''))[:40]} · "
+                f"{c.get('play', 0)} 播 · {c.get('duration', 0)}s"
+                f"（{tr['reason']}）")
 
 
 def consume(ctrl: Controller, handler: Callable[[Event], None], interval: float = 0.1) -> None:

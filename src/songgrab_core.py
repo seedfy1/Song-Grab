@@ -8,6 +8,7 @@
 
 from __future__ import annotations
 
+import http.cookiejar
 import hashlib
 import json
 import os
@@ -24,6 +25,8 @@ from pathlib import Path
 from typing import Any
 
 import platform_compat as _pc
+import metasrc
+import picker as _sel
 
 # ---------------------------------------------------------------- 路径与常量
 
@@ -53,7 +56,8 @@ FFMPEG = _pc.ffmpeg_path()
 ARTISTS_FILE = _pc.artists_file()
 SETTINGS_FILE = _pc.settings_file()
 
-SEARCH_API = "https://api.bilibili.com/x/web-interface/search/type"
+SEARCH_API = "https://api.bilibili.com/x/web-interface/wbi/search/type"
+VIEW_API = "https://api.bilibili.com/x/web-interface/view"
 UA = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
     "(KHTML, like Gecko) Chrome/120.0 Safari/537.36"
@@ -332,8 +336,9 @@ VARIANT = {
 
 DEFAULT_SETTINGS: dict[str, Any] = {
     "output_dir": "",            # 空字符串 = 桌面
-    "min_play": 10000,           # 播放量门槛，0 = 不限
-    "min_dur": 90,               # 最短时长（秒）
+    "min_play": 1,               # 播放量门槛，默认只挡 play==0（冻结文档 §2.8）
+    "min_dur": 50,               # 最短时长（秒，冻结文档 §2.7）
+    "max_dur": 720,              # 最长时长（秒）
     "priority_words": list(DEFAULT_PRIORITY),
     "use_cookies": False,
     "last_txt_dir": "",
@@ -510,6 +515,8 @@ class Card:
     duration: int
     author: str
     from_music: bool = False
+    typeid: int = 0
+    videos: int = 0
 
     def as_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -529,16 +536,26 @@ def _http_json(url: str, timeout: int = 15) -> dict[str, Any]:
         return json.loads(r.read().decode("utf-8", "ignore"))
 
 
+_MIN_INTERVAL = 1.2
+_last_req = 0.0
+_SEARCH_CACHE: dict[str, tuple[float, list[Card]]] = {}
+_CACHE_TTL = 300.0
+
+
+def _throttle() -> None:
+    global _last_req
+    gap = time.time() - _last_req
+    if gap < _MIN_INTERVAL:
+        time.sleep(_MIN_INTERVAL - gap)
+    _last_req = time.time()
+
+
 def search_page(keyword: str, page: int = 1, order: str = "click", tids: int | None = None) -> list[Card]:
-    params = {
-        "search_type": "video",
-        "keyword": keyword,
-        "order": order,
-        "page": str(page),
-    }
+    params = {"search_type": "video", "keyword": keyword, "order": order, "page": str(page)}
     if tids:
         params["tids_1"] = str(tids)
     url = f"{SEARCH_API}?{urllib.parse.urlencode(_wbi_sign(params))}"
+    _throttle()
     data = _http_json(url)
     if data.get("code") != 0:
         raise RuntimeError(f"搜索接口返回 code={data.get('code')} {data.get('message')}")
@@ -546,64 +563,92 @@ def search_page(keyword: str, page: int = 1, order: str = "click", tids: int | N
     cards: list[Card] = []
     for it in result:
         title = re.sub(r"<.*?>", "", str(it.get("title") or ""))
-        cards.append(
-            Card(
-                bvid=str(it.get("bvid") or ""),
-                title=title,
-                play=int(it.get("play") or 0),
-                duration=parse_duration(it.get("duration") or "0:0"),
-                author=str(it.get("author") or ""),
-            )
-        )
+        cards.append(Card(
+            bvid=str(it.get("bvid") or ""), title=title,
+            play=int(it.get("play") or 0),
+            duration=parse_duration(it.get("duration") or "0:0"),
+            author=str(it.get("author") or ""),
+            typeid=int(it.get("typeid") or 0),
+            videos=int(it.get("videos") or 0),
+        ))
     return [c for c in cards if c.bvid]
+
+
+_RETRY_CODES = ("412", "429", "503", "Precondition Failed", "Too Many Requests")
 
 
 def _search_retry(keyword: str, page: int = 1, tids: int | None = None,
                   order: str = "click", tries: int = 3) -> list[Card]:
-    """单路搜索失败重试（412 风控是间歇性的，等一两秒往往就过）。"""
-    last = None
-    for i in range(tries):
+    last: Exception | None = None
+    for attempt in range(tries):
         try:
             return search_page(keyword, page=page, tids=tids, order=order)
         except Exception as e:
             last = e
-            if i < tries - 1:
-                time.sleep(1.2 * (i + 1))
+            if attempt < tries - 1:
+                time.sleep(1.5 * (attempt + 1))
+                continue
+            break
     if last:
         raise last
     return []
 
 
 def search_both(keyword: str, page: int = 1) -> list[Card]:
-    """综合 + 音乐分区 + 相关性排序，三路合并去重。
+    """§1：音乐分区（totalrank）+ 综合区（click），按 bvid 去重，留音乐分区那条。"""
+    keyword = str(keyword or "").strip()
+    if not keyword:
+        return []
+    now = time.time()
+    hit = _SEARCH_CACHE.get(keyword)
+    if hit and now - hit[0] < _CACHE_TTL:
+        return list(hit[1])
 
-    单用「按播放量」排序时，泛词（如「演员」）会被高播放的科普/娱乐视频淹没；
-    补一路 totalrank（综合排序）能把真正的歌曲捞回来。
-    """
     merged: dict[str, Card] = {}
     ok_routes = 0
     try:
-        for c in _search_retry(keyword, page=page, tids=3):
+        for c in _search_retry(keyword, page=page, tids=3, order="totalrank"):
             c.from_music = True
             merged[c.bvid] = c
         ok_routes += 1
     except Exception:
         pass
     try:
-        for c in _search_retry(keyword, page=page):
-            merged.setdefault(c.bvid, c)
-        ok_routes += 1
-    except Exception:
-        pass
-    try:
-        for c in _search_retry(keyword, page=page, order="totalrank"):
+        for c in _search_retry(keyword, page=page, order="click"):
             merged.setdefault(c.bvid, c)
         ok_routes += 1
     except Exception:
         pass
     if ok_routes == 0:
         raise RuntimeError("B站搜索被限流，请稍后重试")
-    return list(merged.values())
+
+    cards = list(merged.values())
+    if not cards:
+        # B站被风控时会返回 code=0 但结果为空，别把空结果写进缓存
+        raise RuntimeError("B站搜索无结果（可能被风控，请稍后重试）")
+    if len(_SEARCH_CACHE) > 64:
+        _SEARCH_CACHE.clear()
+    _SEARCH_CACHE[keyword] = (now, cards)
+    return list(cards)
+
+
+def video_info(bvid: str) -> Card | None:
+    """按 bvid 取单条视频信息（已确认音源，下载阶段不再搜索）。"""
+    try:
+        url = f"{VIEW_API}?bvid={urllib.parse.quote(str(bvid))}"
+        data = _http_json(url)
+        d = data.get("data") or {}
+        if not d:
+            return None
+        return Card(
+            bvid=str(d.get("bvid") or bvid), title=str(d.get("title") or ""),
+            play=int(((d.get("stat") or {}).get("view")) or 0),
+            duration=int(d.get("duration") or 0),
+            author=str(((d.get("owner") or {}).get("name")) or ""),
+            typeid=int(d.get("tid") or 0), videos=int(d.get("videos") or 0),
+        )
+    except Exception:
+        return None
 
 
 # ---------------------------------------------------------------- 选片
@@ -638,62 +683,129 @@ def _match_word(word: str, title: str) -> bool:
 def pick_card(
     cards: list[Card],
     keyword: str,
-    min_play: int = 10000,
-    min_dur: int = 90,
+    min_play: int = 1,
+    min_dur: int = 50,
     priority_words: list[str] | None = None,
     strict_music: bool = True,
-    max_dur: int = 1200,
+    max_dur: int = 720,
+    artist: str = "",
+    ref_dur: int = 0,
 ) -> PickResult:
-    words = [
-        w for w in (DEFAULT_PRIORITY if priority_words is None else priority_words)
-        if str(w).strip()
-    ]
+    """§2–§4 的包装：真正的规则在 select.py（对应冻结文档）。"""
+    picked = _sel.pick(
+        cards, keyword,
+        min_play=int(min_play), min_dur=int(min_dur), max_dur=int(max_dur),
+        priority_words=priority_words if priority_words is not None else DEFAULT_PRIORITY,
+        canonical=artist, ref_dur=int(ref_dur),
+    )
+    card = picked.cand.raw if picked.cand is not None else None
+    return PickResult(card, picked.reason, [c.raw for c in picked.top])
 
-    relevant = [c for c in cards if c.title and title_matched(c.title, keyword)]
-    if not relevant:
-        return PickResult(None, "没有标题匹配的视频")
 
-    musical = [c for c in relevant if not TITLE_BLOCK.search(c.title)]
-    if not musical:
-        return PickResult(None, "匹配结果都不是歌曲视频")
+def describe_card(card: Card | None) -> str:
+    if card is None:
+        return ""
+    return f"{card.title[:42]} · {card.author} · {card.play} 播 · {card.duration}s"
 
-    long_enough = [c for c in musical if c.duration == 0 or c.duration >= min_dur]
-    if not long_enough:
-        return PickResult(None, f"匹配视频都短于 {min_dur}s")
-    # 超过 20 分钟的通常是整张专辑/连续剧合集，不是单曲
-    # （Revelation 会被邓紫棋「启示录」57 分钟的 MV 连续剧按播放量压过去）
-    single = [c for c in long_enough if c.duration == 0 or c.duration <= max_dur]
-    if single:
-        long_enough = single
 
-    # 音乐分区优先，但不再把非分区的结果整体丢掉
-    # （很多正版音源在综合搜索里，只在分区里找会漏掉高播放的版本）
-    above = [c for c in long_enough if c.play >= min_play]
-    if not above:
-        return PickResult(
-            None,
-            f"匹配视频播放量不足 {min_play / 10000:g}w（可在设置里调低门槛）")
+def trial_song(raw: str, cfg: dict[str, Any], progress=None) -> dict[str, Any]:
+    """§8.1–8.4 试搜：查作者 → 带作者搜 → 分支判定 → 三档结果。"""
+    say = progress or (lambda *a, **k: None)
+    song, hint = parse_song_entry(raw)
+    base: dict[str, Any] = {
+        "stage": "fail", "song": song, "bvid": "", "title": "", "author": "",
+        "play": 0, "duration": 0, "artist": "", "ref_dur": 0, "source": "",
+        "reason": "", "candidates": [], "pool_n": 0, "_card": None, "_pool": [],
+    }
+    if not song:
+        base["reason"] = "先输入歌名"
+        return base
 
-    above.sort(key=lambda c: (bool(c.from_music), c.play), reverse=True)
+    min_play = int(cfg.get("min_play", 1))
+    min_dur = int(cfg.get("min_dur", 50))
+    max_dur = int(cfg.get("max_dur", 720))
+    words = cfg.get("priority_words", DEFAULT_PRIORITY)
 
-    # 优先级词条：按顺序，命中即在该组内取播放量最高（支持正则）
-    for w in words:
-        group = [c for c in above if _match_word(w, c.title)]
-        if group:
-            return PickResult(group[0], f"命中优先词「{w}」", above[:5])
+    say("artist", f"查曲师「{song}」…")
+    try:
+        artist, ref_dur, source = metasrc.lookup(song, hint)
+    except Exception:
+        artist, ref_dur, source = hint.strip(), 0, ("用户指定" if hint else "")
+    base.update(artist=artist, ref_dur=ref_dur, source=source)
+    say("artist", f"{source}：{artist}" + (f"（{ref_dur}s）" if ref_dur else "")
+        if artist else "平台没查到作者，走不带作者的搜索")
 
-    # 标题里以《歌名》形式出现的，通常是歌曲本身而不是同名视频
-    # （「非凡」有 813 万播的华为宣传片，真正的歌是「《非凡》｜ 刘德华」）
-    # 只对中文歌名生效：中文标题加书名号很常见，英文标题几乎不加，
-    # 强行套用会让同名的冷门英文歌压过高播放的正式版
-    # （Revelation：LING 4.3 万播带书名号，战双 40.7 万播不带）
-    if re.search(r"[\u4e00-\u9fff]", keyword):
-        quoted = [c for c in above
-                  if f"《{keyword}》" in c.title or f"「{keyword}」" in c.title]
-        if quoted:
-            return PickResult(quoted[0], "标题含《歌名》", above[:5])
+    canonical = artist if (artist and metasrc.artist_ok(artist)) else ""
 
-    return PickResult(above[0], "播放量最高", above[:5])
+    def _search(kw: str) -> list[Card]:
+        try:
+            say("search", f"搜索「{kw}」")
+            return search_both(kw)
+        except Exception as e:
+            say("search", f"搜索失败：{e}")
+            return []
+
+    def _pick(cards: list[Card], canon: str) -> Any:
+        return _sel.pick(
+            cards, song, min_play=min_play, min_dur=min_dur, max_dur=max_dur,
+            priority_words=words, canonical=canon, ref_dur=ref_dur,
+        )
+
+    kw = f"{song} {artist}".strip() if artist else song
+    cards = _search(kw)
+    if not cards and artist and kw != song:
+        # 带作者搜不到（B站对「歌名 作者」这种组合经常 0 条）先回退纯歌名
+        say("search", "带作者搜索无结果，回退不带作者")
+        cards = _search(song)
+    if not cards:
+        base["reason"] = "搜索无结果（可能被风控，稍后重试）"
+        return base
+    picked = _pick(cards, canonical)
+    pool = picked.pool
+
+    hot = len([c for c in pool if c.play > 10000])
+    branch1 = len(pool) > 5 and hot >= 2
+
+    if not branch1 and artist:
+        say("search", f"命中不足（{len(pool)} 条，过万 {hot} 条），回退不带作者")
+        merged: dict[str, Card] = {c.bvid: c for c in cards}
+        for c in _search(song):
+            merged.setdefault(c.bvid, c)
+        picked = _pick(list(merged.values()), "")
+        picked.rebuilt = True
+        pool = picked.pool
+
+    base["pool_n"] = len(pool)
+    if not pool:
+        base["reason"] = picked.reason or "无搜索结果"
+        return base
+
+    if branch1 and picked.cand is not None and canonical:
+        top = picked.cand
+        full = (normalize(song) in normalize(top.title)
+                and normalize(canonical) in normalize(top.title))
+        unique = len(pool) == 1 or abs(pool[0].score - pool[1].score) > 1e-9
+        stage = "ok" if (full and unique) else "confirm"
+        reason = "完全命中：标题同时含歌名和作者" if stage == "ok" else "待确认：多个高分候选"
+    else:
+        stage = "confirm"
+        reason = "待确认：候选不足或跨歌手，取加权前三"
+
+    chosen, who, why = _sel.choose_card(pool, song, canonical=canonical, ref_dur=ref_dur)
+    if chosen is None:
+        chosen = pool[0]
+        why = "作者判定链没定位到正片，退回加权第一"
+    cand = chosen.raw
+    base.update(
+        stage=stage, bvid=cand.bvid, title=cand.title, author=cand.author,
+        play=cand.play, duration=cand.duration,
+        artist=(who or artist or ""), reason=f"{reason}；{why}",
+        _card=cand, _pool=pool,
+        candidates=[{"bvid": c.bvid, "title": c.title, "author": c.author,
+                     "play": c.play, "duration": c.duration,
+                     "score": round(c.score, 4)} for c in pool[:3]],
+    )
+    return base
 
 
 # ---------------------------------------------------------------- 下载与转换
@@ -1027,12 +1139,14 @@ def find_existing(out_dir: Path, song: str) -> Path | None:
 @dataclass
 class SongResult:
     song: str
-    status: str          # ok / skip / fail
+    status: str          # ok / skip / fail / confirm
     reason: str = ""
     file: str = ""
     bvid: str = ""
     artist: str = ""
     pending: bool = False  # 曲师未查到，暂用 UP 主名
+    title: str = ""        # confirm 时给候选标题
+    candidates: list = field(default_factory=list)  # confirm 时的前三个候选
 
 
 # ---------------------------------------------------------------- 联网查曲师
@@ -1055,7 +1169,7 @@ def parse_song_entry(text: str) -> tuple[str, str]:
         return "", ""
     for sep in ("＋", "+"):
         if sep in t:
-            a, b = t.split(sep, 1)
+            a, b = t.rsplit(sep, 1)
             if a.strip() and b.strip():
                 return a.strip(), b.strip()
     return t, ""
@@ -1152,25 +1266,20 @@ def process_song(
     workdir: Path,
     progress=None,
     artist_hint: str = "",
+    bvid: str = "",
+    artist: str = "",
 ) -> SongResult:
-    """处理单首歌。曲师查不到时也下载，用 UP 主名占位并标记 pending。"""
+    """处理单首歌（§8.1：已确认音源就按 bvid 直下，下载阶段不再搜索）。
+
+    artist_hint = 用户用 `+` 写的作者
+    artist      = 界面确认/改过的作者
+    bvid        = 界面已确认的候选
+    """
     say = progress or (lambda *a, **k: None)
     out_dir = resolve_output_dir(cfg)
     artists = load_artists()
 
-    artist = (artist_hint or "").strip()
-    net_artist = ""
-    if not artist:
-        say("artist", f"联网查曲师「{song}」…")
-        net_artist, source = lookup_artist(song)
-        if net_artist:
-            say("artist", f"网易云：{net_artist}（{source}）")
-        else:
-            # 查询失败（断网/限流/曲库没有）时用本地缓存兜底
-            cached = artists.get(song, "").strip()
-            if cached:
-                artist = cached
-                say("artist", f"联网失败，用缓存曲师：{artist}")
+    artist = (artist or artist_hint or "").strip()
 
     # 已有成品：曲师变了就顺手改名，避免补表后留下旧名字
     existing = find_existing(out_dir, song)
@@ -1184,60 +1293,41 @@ def process_song(
                     pass
         return SongResult(song, "skip", "已存在", existing.name, artist=artist)
 
-    # 多歌手（如「谢帝 / Echo」）只取第一个参与搜索，命中率更高
-    search_artist = re.split(r"\s*[/／|]\s*", artist)[0].strip() if artist else ""
-    say("search", f"搜索「{song}」")
-    try:
-        cards = search_both(song)
-        # B站 对「歌名 歌手」这种空格组合常返回 0 条，所以先搜歌名，
-        # 再把标题里带歌手的往前排（存在才用，避免过窄）
-        cards_all = list(cards)
-        if search_artist and cards:
-            prefer = [c for c in cards
-                      if search_artist.lower() in (c.title or "").lower()]
-            if prefer:
-                cards = prefer
-                say("search", f"标题含「{search_artist}」的 {len(prefer)} 条优先")
-    except Exception as e:
-        return SongResult(song, "fail", f"搜索失败：{e}")
-    if not cards:
-        return SongResult(song, "fail", "搜索无结果")
+    card: Card | None = None
+    reason = ""
+    if bvid:
+        say("pick", f"已确认音源 {bvid}，直接下载")
+        card = video_info(bvid)
+        if card is None:
+            return SongResult(song, "fail", "取不到已确认音源的详情", bvid=bvid)
+        reason = "已确认音源"
+        if not artist:
+            try:
+                artist = metasrc.lookup(song, "")[0]
+            except Exception:
+                artist = ""
+    else:
+        tr = trial_song(f"{song}+{artist_hint}" if artist_hint else song, cfg, say)
+        if not tr["bvid"]:
+            return SongResult(song, "fail", tr["reason"] or "搜索无结果")
+        card = tr["_card"]
+        reason = tr["reason"] or "试搜选中"
+        if not artist:
+            artist = tr.get("artist") or ""
+        say("pick", f"选中 {card.play} 播 · {card.title[:30]}")
 
-    pick = pick_card(
-        cards, song,
-        min_play=int(cfg.get("min_play", 10000)),
-        min_dur=int(cfg.get("min_dur", 90)),
-        priority_words=cfg.get("priority_words", DEFAULT_PRIORITY),
-    )
-    if not pick.card and len(cards) != len(cards_all):
-        # 歌手过滤把能用的候选筛掉了，退回全部候选再挑一次
-        say("search", "歌手过滤过窄，回退全部候选")
-        pick2 = pick_card(
-            cards_all, song,
-            min_play=int(cfg.get("min_play", 10000)),
-            min_dur=int(cfg.get("min_dur", 90)),
-            priority_words=cfg.get("priority_words", DEFAULT_PRIORITY),
-        )
-        if pick2.card:
-            pick = pick2
-
-    if not pick.card:
-        return SongResult(song, "fail", pick.reason)
-
-    card = pick.card
-    say("pick", f"选中 {card.play} 播放 · {card.title[:30]}")
+    if artist and not artist_hint:
+        # 平台/标题判出来的作者写进缓存，下次断网也有兜底
+        try:
+            save_artist(song, artist)
+        except Exception:
+            pass
+    if not artist:
+        artist = artists.get(song, "").strip()
 
     pending = False
     if not artist:
-        artist = resolve_artist(song, card.title, net_artist)
-        if artist:
-            if net_artist and artist != net_artist:
-                say("artist", f"标题与网易云不符，采用标题歌手：{artist}")
-            else:
-                say("artist", f"曲师：{artist}")
-            save_artist(song, artist)
-    if not artist:
-        artist = card.author.strip() or "未知"
+        artist = (card.author or "").strip() or "未知"
         pending = True
         say("artist", f"未查到曲师，暂用 UP 主「{artist}」")
 
@@ -1274,9 +1364,8 @@ def process_song(
             "bytes": dst.stat().st_size, "dur": round(dur, 2), "bv": card.bvid,
             "pending_artist": pending,
         })
-        reason = pick.reason
         if pending:
-            reason = f"{pick.reason}；曲师未查到，暂用 UP 主名"
+            reason = f"{reason}；曲师未查到，暂用 UP 主名"
         return SongResult(song, "ok", reason, fname, card.bvid, artist=artist, pending=pending)
     except Exception as e:
         import traceback

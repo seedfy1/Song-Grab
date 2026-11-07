@@ -12,6 +12,7 @@ import json
 import os
 import sys
 import threading
+import unicodedata
 import time
 import urllib.parse
 from pathlib import Path
@@ -271,18 +272,42 @@ class SplashScreen(Screen):
         pass
 
 
+def _pretty(text: str) -> str:
+    """B 站标题爱用数学粗体（𝐇𝐢-𝐑𝐞𝐬），中文字体没有这些字形，显示前归一化。"""
+    try:
+        return unicodedata.normalize("NFKC", str(text or ""))
+    except Exception:
+        return str(text or "")
+
+
+def _song_of_raw(raw: str) -> str:
+    try:
+        return core.parse_song_entry(raw)[0]
+    except Exception:
+        return raw
+
+
 class ResultRow(BoxLayout):
     song = StringProperty("")
     status = StringProperty("")
     reason = StringProperty("")
-    style = StringProperty("wait")   # wait / ok / fail / skip
+    style = StringProperty("wait")   # wait / ok / fail / skip / confirm
 
     def color_for(self, style: str) -> list[float]:
         return {
             "ok": [0.24, 0.78, 0.45, 1],
             "fail": [0.95, 0.35, 0.35, 1],
             "skip": [0.6, 0.6, 0.65, 1],
+            "confirm": [0.98, 0.76, 0.25, 1],   # 待确认：琥珀色
         }.get(style, [0.85, 0.85, 0.9, 1])
+
+    def on_touch_down(self, touch):
+        if self.collide_point(*touch.pos):
+            app = App.get_running_app()
+            if app is not None and getattr(self, "style", "") == "confirm":
+                app.show_candidates(self.song)
+                return True
+        return super().on_touch_down(touch)
 
 
 class SongGrabApp(App):
@@ -295,6 +320,12 @@ class SongGrabApp(App):
     ffmpeg_hint = StringProperty("")
     cookie_hint = StringProperty("")
     failed_songs: list[str] = []
+    # 用户确认过的音源：raw 行 -> {"bvid","artist","title"}
+    confirmed: dict[str, dict] = {}
+    # 待确认曲目的候选：歌名 -> [候选 dict]
+    pending_cands: dict[str, list] = {}
+    # True = 未确认的曲目不自动下载（冻结文档 §8.5「跳过未确定项」）
+    require_confirm = BooleanProperty(True)
     _cmd_id: str = ""
     results: dict = {}
 
@@ -370,6 +401,8 @@ class SongGrabApp(App):
                 res.status,
                 f"{res.file or res.reason}",
             )
+            if getattr(res, "status", "") == "confirm":
+                self.pending_cands[res.song] = list(getattr(res, "candidates", []) or [])
             self.results[res.song] = {
                 "song": res.song, "status": res.status,
                 "file": res.file, "reason": res.reason,
@@ -508,12 +541,97 @@ class SongGrabApp(App):
 
         def _work():
             try:
-                msg = self.ctrl.probe(song, cfg)
+                tr = self.ctrl.trial(song, cfg)
             except Exception as e:
-                msg = f"试搜失败：{e}"
-            Clock.schedule_once(lambda dt: setattr(self, "status_text", msg), 0)
+                tr = {"stage": "fail", "reason": f"试搜失败：{e}", "candidates": []}
+            Clock.schedule_once(lambda dt: self._show_trial(song, tr), 0)
 
         threading.Thread(target=_work, daemon=True).start()
+
+    def _show_trial(self, raw: str, tr: dict):
+        """§8.5 三档结果框：完全命中 / 待确认（带候选卡）/ 失败原因。"""
+        from kivy.uix.button import Button
+        from kivy.uix.label import Label
+        stage = tr.get("stage", "fail")
+        head = {"ok": "✅ 完全命中", "confirm": "❓ 待确认", "fail": "❌ 没有选中"}.get(
+            stage, "❓ 待确认")
+        self.status_text = f"{head}：{tr.get('title') or tr.get('reason') or ''}"[:60]
+
+        from kivy.uix.scrollview import ScrollView
+        box = BoxLayout(orientation="vertical", padding=dp(12), spacing=dp(6))
+        view = ModalView(size_hint=(0.94, 0.8))
+
+        def lab(text, color=(0.86, 0.88, 0.94, 1), size=12, h=None):
+            w = Label(text=text, font_name=FONT, font_size=sp(size), halign="left",
+                      valign="top", color=color, size_hint_y=None, height=h or dp(22))
+            w.bind(width=lambda i, v: setattr(i, "text_size", (v - dp(8), None)))
+            return w
+
+        box.add_widget(lab(head, size=15, h=dp(28)))
+        if tr.get("artist"):
+            box.add_widget(lab(f"曲师：{tr['artist']}（{tr.get('source', '')}）"))
+        box.add_widget(lab(f"原因：{tr.get('reason', '')}", size=11))
+
+        sv = ScrollView()
+        inner = BoxLayout(orientation="vertical", size_hint_y=None, spacing=dp(6))
+        inner.bind(minimum_height=inner.setter("height"))
+        cands = tr.get("candidates") or []
+        if not cands:
+            inner.add_widget(lab("没有候选", size=11))
+        for c in cands:
+            row = BoxLayout(size_hint_y=None, height=dp(56), spacing=dp(6))
+            row.add_widget(lab(
+                f"{_pretty(c.get('title', ''))[:40]}\n"
+                f"{c.get('play', 0)} 播 · {c.get('duration', 0)}s · {c.get('author', '')[:12]}",
+                size=10, h=dp(52)))
+            row.add_widget(Button(
+                text="用这首", font_name=FONT, font_size=sp(11),
+                size_hint_x=None, width=dp(74),
+                on_release=lambda *_ , c=c: (self._confirm_source(raw, c), view.dismiss())))
+            inner.add_widget(row)
+        sv.add_widget(inner)
+        box.add_widget(sv)
+
+        btns = BoxLayout(size_hint_y=None, height=dp(44), spacing=dp(6))
+        btns.add_widget(Button(text="关闭", font_name=FONT,
+                               on_release=lambda *_: view.dismiss()))
+        if tr.get("bvid"):
+            btns.add_widget(Button(
+                text="下载这首", font_name=FONT,
+                on_release=lambda *_ , t=tr: (self._confirm_source(
+                    raw, {"bvid": t["bvid"], "artist": t.get("artist", ""),
+                          "title": t.get("title", "")}), view.dismiss())))
+        box.add_widget(btns)
+        view.add_widget(box)
+        view.open()
+
+    def _confirm_source(self, raw: str, cand: dict):
+        """记住用户选定的音源，并把该曲目加入「待下载」。"""
+        self.confirmed[raw] = {
+            "bvid": cand.get("bvid", ""),
+            "artist": cand.get("artist") or "",
+            "title": cand.get("title", ""),
+        }
+        self.status_text = f"已选定：{cand.get('title', '')[:30]}"
+
+    def show_candidates(self, song: str):
+        """点「待确认」行：列出候选让用户点选。"""
+        cands = self.pending_cands.get(song) or []
+        if not cands:
+            self.status_text = f"{song}：没有可选的候选"
+            return
+        raw = song
+        for k in list(self.confirmed) + list(self.pending_cands):
+            if _song_of_raw(k) == song:
+                raw = k
+                break
+        self._show_trial(raw, {"stage": "confirm", "reason": "点「用这首」设为已确认音源",
+                               "candidates": cands, "artist": ""})
+
+    def toggle_require_confirm(self):
+        self.require_confirm = not self.require_confirm
+        self.status_text = ("未确认的曲目不下载（已确认的才下）"
+                            if self.require_confirm else "未确认的曲目按加权第一直接下载")
 
     def run_diag(self):
         import threading as _th
@@ -580,20 +698,32 @@ class SongGrabApp(App):
     def ask_add_prio(self):
         PromptView("添加优先词（支持正则）", lambda w: self.sm.get_screen("settings").add_word(w)).open()
 
+    def _items_from_text(self, text: str) -> list:
+        items: list = []
+        for raw in self.ctrl.parse_songs(text):
+            song, hint = core.parse_song_entry(raw)
+            got = self.confirmed.get(raw) or {}
+            items.append({"raw": raw, "song": song, "hint": hint,
+                          "bvid": got.get("bvid", ""),
+                          "artist": got.get("artist", "")})
+        return items
+
     def start_download(self, text: str):
-        songs = self.ctrl.parse_songs(text)
-        if not songs:
+        items = self._items_from_text(text)
+        if not items:
             self.status_text = "没有歌名"
             return
         main: MainScreen = self.sm.get_screen("main")
         main.clear_rows()
         self.failed_songs = []
+        self.pending_cands = {}
         cfg = dict(self.cfg)
         cfg["output_dir"] = self.out_dir
-        if self.ctrl.start(songs, cfg):
+        cfg["require_confirm"] = bool(self.require_confirm)
+        if self.ctrl.start(items, cfg):
             self.running = True
             self.progress = 0
-            self.status_text = f"开始处理 {len(songs)} 首"
+            self.status_text = f"开始处理 {len(items)} 首"
         else:
             self.status_text = "已有任务在跑"
 
@@ -641,7 +771,8 @@ class MainScreen(Screen):
             row.style = style
             row.reason = reason
             return
-        row = ResultRow(song=song, status={"ok": "成功", "fail": "失败", "skip": "跳过"}.get(style, "…"),
+        row = ResultRow(song=song, status={"ok": "成功", "fail": "失败", "skip": "跳过",
+                            "confirm": "待确认"}.get(style, "…"),
                         reason=reason, style=style)
         rows[song] = row
         box.add_widget(row)
