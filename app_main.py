@@ -157,6 +157,17 @@ HELP_TEXT = """【第一次使用】
 想指定歌手就在歌名后加「+歌手」
 成品位置：手机存储 / Music / SongGrab /
 
+【直接按链接下载】
+
+也可以粘 B 站链接或 BV 号，一行一个，认出来就不搜索、
+直接下那个视频：
+  BV1xx411c7mD
+  https://www.bilibili.com/video/BV1xx411c7mD
+  https://b23.tv/xxxxxxx     （短链也行）
+  av170001                   （av 号也行）
+歌名从视频标题里自动洗干净；标题太乱的话，
+下完在文件管理器里改个名就行。
+
 【写得更准】
 
 歌名+歌手     例：晴天+周杰伦
@@ -801,8 +812,23 @@ class SongGrabApp(App):
     def _items_from_text(self, text: str) -> list:
         items: list = []
         for raw in self.ctrl.parse_songs(text):
-            song, hint = core.parse_song_entry(raw)
             got = self.confirmed.get(raw) or {}
+            # 粘链接或 BV 号 → 直接按那个视频下，不走搜索
+            bvid = core.scan_bvid(raw) or got.get("bvid", "")
+            if bvid and not got.get("bvid"):
+                info = None
+                try:
+                    info = core.video_info(bvid)
+                except Exception:
+                    info = None
+                if info:
+                    song = core.clean_video_title(info.title) or raw
+                    artist = core.artist_from_title(info.title, song) or ""
+                    self.status_text = f"按链接处理：{song}"
+                    items.append({"raw": raw, "song": song, "hint": "",
+                                  "bvid": bvid, "artist": artist, "no_artist": False})
+                    continue
+            song, hint = core.parse_song_entry(raw)
             # 用户主动标「未命名」（改曲师时留空）→ 下载阶段不查也不写作者
             lock = raw in self.trial_artist and not self.trial_artist[raw]
             items.append({"raw": raw, "song": song, "hint": hint,

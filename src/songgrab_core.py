@@ -1214,6 +1214,89 @@ class SongResult:
 NETEASE_SEARCH = "https://music.163.com/api/search/get"
 
 
+# ---------------- 链接 / BV 号直下 ----------------
+
+_BV_RX = re.compile(r"(?i)\bbv([0-9a-z]{10})\b")
+_AV_RX = re.compile(r"(?i)\bav(\d{1,12})\b")
+_URL_RX = re.compile(r"https?://[^\s，。；、）】」\"'<>]+", re.I)
+_TAG_RX = re.compile(r"【[^】]{0,30}】|\[[^\]]{0,30}\]")
+_TAIL_NOISE_RX = re.compile(
+    r"(?i)(?:[\s\-—_|｜·]*(?:官方\s*(?:mv|music\s*video|视频)|正式版?|高清|超清|蓝光|"
+    r"完整版?|无损|音质|hi-?res|hires|4k|8k|1080p|2160p|60fps|中文字幕|字幕版?|字幕|"
+    r"修复版?|重置版?|重制版?|搬运|自用|收藏|动态歌词|附歌词|歌词|"
+    r"mv|music\s*video|live|现场版?|live版))\s*$")
+
+
+def _resolve_url(url: str) -> str:
+    """跟随跳转，拿到真实地址（b23.tv 短链要靠这个）。"""
+    try:
+        req = urllib.request.Request(url, headers={"User-Agent": UA})
+        with _opener().open(req, timeout=12) as r:
+            return r.geturl() or url
+    except Exception:
+        return url
+
+
+def _av_to_bvid(aid: str) -> str:
+    try:
+        d = _http_json(f"{VIEW_API}?aid={urllib.parse.quote(str(aid))}")
+        return str((d.get("data") or {}).get("bvid") or "")
+    except Exception:
+        return ""
+
+
+def scan_bvid(text: str) -> str:
+    """从一串文字里认出 B 站视频号，认不出返回空串。
+
+    支持的写法：
+      BV1xx411c7mD              —— 裸 BV 号
+      av170001                  —— 裸 av 号（联网换成 BV）
+      https://www.bilibili.com/video/BV1xx411c7mD?p=1
+      https://b23.tv/xxxxx      —— 短链，跟随一次跳转再认
+    """
+    t = (text or "").strip()
+    if not t:
+        return ""
+    m = _BV_RX.search(t)
+    if m:
+        return "BV" + m.group(1)
+
+    m = _AV_RX.search(t)
+    if m:
+        bv = _av_to_bvid(m.group(1))
+        if bv:
+            return bv
+
+    u = _URL_RX.search(t)
+    if u:
+        final = _resolve_url(u.group(0))
+        m = _BV_RX.search(final)
+        if m:
+            return "BV" + m.group(1)
+        m = _AV_RX.search(final)
+        if m:
+            return _av_to_bvid(m.group(1))
+    return ""
+
+
+def clean_video_title(title: str) -> str:
+    """把 B 站视频标题洗成一个像样的歌名（直下时用）。"""
+    t = unicodedata.normalize("NFKC", title or "").strip()
+    t = re.sub(r"\s+", " ", t)
+    if not t:
+        return ""
+    m = re.search(r"《([^》]{1,40})》", t)
+    if m and m.group(1).strip():
+        return m.group(1).strip()
+    t = _TAG_RX.sub(" ", t)
+    t = re.sub(r"\s+", " ", t).strip(" -—_|｜·")
+    prev = None
+    while prev != t:                      # 尾缀可能连着好几段
+        prev = t
+        t = _TAIL_NOISE_RX.sub("", t).strip(" -—_|｜·")
+    return (t or title or "")[:40].strip()
+
+
 def parse_song_entry(text: str) -> tuple[str, str]:
     """把输入拆成 (歌名, 歌手)。
 
@@ -1362,9 +1445,13 @@ def process_song(
             bvid = ""
         else:
             reason = "已确认音源"
+            if not song:                      # 粘链接进来的：歌名从标题里洗
+                song = clean_video_title(card.title) or bvid
+                say("pick", f"歌名：{song}")
             if not artist and not no_artist:
                 try:
-                    artist = metasrc.lookup(song, "")[0]
+                    artist = (artist_from_title(card.title, song)
+                              or metasrc.lookup(song, "")[0])
                 except Exception:
                     artist = ""
     if card is None:

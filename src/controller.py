@@ -115,6 +115,8 @@ class Controller:
                 else:
                     raw = str(item)
                     song, hint = core.parse_song_entry(raw)
+                if not song and bvid:             # 粘链接进来的，歌名等下载阶段从标题洗
+                    song = bvid
                 if not song:
                     continue
                 self._emit(Event("start", song=song, index=i, total=total))
