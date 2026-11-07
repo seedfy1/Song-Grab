@@ -34,6 +34,21 @@ buildozer.spec      打包配置
 | 输出目录 | 桌面 | `/sdcard/Music/SongGrab` |
 | 打开目录 | explorer | Android Intent → 文件管理器 |
 | 配置位置 | exe 同级 | 应用私有目录 |
+| 输入 | 歌名（+歌手） | 歌名（+歌手）、**B 站链接 / BV 号 / av 号 / b23.tv 短链** |
+
+### 粘链接直下
+
+输入框里粘 B 站链接或 BV 号，`scan_bvid()`（`src/songgrab_core.py`）认出来后
+**跳过搜索与选片**，直接 `video_info()` 取标题 → `clean_video_title()` 洗成歌名 →
+`process_song(bvid=...)` 下载。支持：
+
+    BV1xx411c7mD
+    https://www.bilibili.com/video/BV1xx411c7mD?p=1
+    https://b23.tv/xxxxxxx          # 短链，跟随一次跳转
+    av170001                        # av 号，走 view 接口换成 BV
+
+标题清洗顺序：`《…》` 书名号优先 → 剥【】标签 → 反复剥尾缀（官方MV / 高清 / 4K /
+2160P / 完整版 / 无损 / 修复版 / 现场版 / 歌词 …）→ 最多 40 字。
 
 ## 选片规则（冻结版）
 
