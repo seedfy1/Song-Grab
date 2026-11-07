@@ -718,7 +718,7 @@ class SongGrabApp(App):
         head_color = {"ok": (0.45, 0.86, 0.55, 1), "confirm": (0.95, 0.78, 0.35, 1),
                       "fail": (0.95, 0.50, 0.50, 1)}.get(stage, (0.9, 0.9, 0.9, 1))
         if cb:
-            head = f"{head[0]}{cb.get('n', 1)}/{cb.get('m', 1)}{head[1:]}  第 {cb.get('n', 1)} 首"
+            head = f"{head}  第 {cb.get('n', 1)}/{cb.get('m', 1)} 首"
         box.add_widget(lab(head, size=16, h=dp(30), color=head_color))
         box.add_widget(self._artist_row(raw, tr))
         box.add_widget(lab(f"原因：{tr.get('reason', '')}", size=11))
