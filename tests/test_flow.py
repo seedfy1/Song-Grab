@@ -227,6 +227,49 @@ def test_filename_is_song_only_and_tag_unknown():
          core.video_info, core.append_catalog, core.load_artists,
          core.save_artist) = old
 
+def test_trial_all_covers_is_confirm():
+    """全是翻唱时 trial_song 走待确认，并把候选交出来（不能 0 条）。"""
+    import songgrab_core as core
+    import metasrc
+
+    def fake_search(kw, page=1):
+        return [core.Card(bvid="BVcover%d" % i, title="晴天 翻唱版 %d" % i,
+                          play=50000 + i, duration=240, author="某UP",
+                          from_music=True, typeid=3, videos=1) for i in range(3)]
+
+    o1, o2 = core.search_both, metasrc.lookup
+    core.search_both = fake_search
+    metasrc.lookup = lambda song, hint="": ("", 0, "")
+    try:
+        cfg = dict(core.DEFAULT_SETTINGS)
+        tr = core.trial_song("晴天", cfg)
+        assert tr["stage"] == "confirm", tr
+        assert tr["candidates"], tr
+        assert tr["bvid"], tr
+    finally:
+        core.search_both, metasrc.lookup = o1, o2
+
+
+def test_trial_want_cover_not_filtered():
+    """歌名里自己写了「翻唱」→ 不该被判待确认/失败。"""
+    import songgrab_core as core
+    import metasrc
+
+    def fake_search(kw, page=1):
+        return [core.Card(bvid="BVwant1", title="晴天 翻唱版 完整版", play=90000,
+                          duration=240, author="某UP", from_music=True,
+                          typeid=3, videos=1)]
+
+    o1, o2 = core.search_both, metasrc.lookup
+    core.search_both = fake_search
+    metasrc.lookup = lambda song, hint="": ("", 0, "")
+    try:
+        tr = core.trial_song("晴天 翻唱", dict(core.DEFAULT_SETTINGS))
+        assert tr["stage"] == "ok", tr
+        assert tr["bvid"] == "BVwant1", tr
+    finally:
+        core.search_both, metasrc.lookup = o1, o2
+
 
 if __name__ == "__main__":
     fns = [(n, f) for n, f in sorted(globals().items())

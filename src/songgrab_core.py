@@ -835,9 +835,14 @@ def trial_song(raw: str, cfg: dict[str, Any], progress=None) -> dict[str, Any]:
         base["reason"] = picked.reason or "无搜索结果"
         return base
 
+    lenient = bool(_sel._USER_WANT_RX.search(f"{song} {hint}"))
     if picked.stage == "confirm":
         stage = "confirm"
         reason = picked.reason or "待确认：候选池全是翻唱/器乐改编"
+    elif lenient and picked.cand is not None:
+        # 用户自己在歌名里写了翻唱/现场/钢琴版 → 他要的就是这个，不再反问
+        stage = "ok"
+        reason = picked.reason or "按你要的版本给结果"
     elif branch1 and picked.cand is not None and canonical:
         top = picked.cand
         full = (normalize(song) in normalize(top.title)
