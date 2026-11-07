@@ -29,7 +29,8 @@ jobs:
       - name: 生成源码种子包（代码外置用）
         run: |
           rm -f assets/seed.zip
-          zip -rq assets/seed.zip app_main.py songgrab.kv src \
+          # 注意：assets/fonts 要一起打进去，热更后 code/assets/fonts/ 才有字体
+          zip -rq assets/seed.zip app_main.py songgrab.kv src assets/fonts \
               -x "*/__pycache__/*" "*.pyc"
           echo "seed.zip: $(du -h assets/seed.zip | cut -f1)"
           unzip -l assets/seed.zip | tail -3

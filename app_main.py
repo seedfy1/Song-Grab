@@ -205,6 +205,8 @@ import songgrab_core as core  # noqa: E402
 def register_cjk() -> str:
     """注册一个含中文的字体；找不到就退回默认（会显示方块）。"""
     candidates = [
+        str(HERE / "fonts" / "KaiTi-SC-Regular.ttf"),              # 热更下发的字体
+        str(HERE / "assets" / "fonts" / "KaiTi-SC-Regular.ttf"),   # APK 内置
         "/system/fonts/NotoSansCJK-Regular.ttc",
         "/system/fonts/NotoSansSC-Regular.otf",
         "/system/fonts/NotoSansHans-Regular.otf",
@@ -643,8 +645,8 @@ class SongGrabApp(App):
         from kivy.uix.button import Button
         from kivy.uix.label import Label
         stage = tr.get("stage", "fail")
-        head = {"ok": "✅ 完全命中", "confirm": "❓ 待确认", "fail": "❌ 没有选中"}.get(
-            stage, "❓ 待确认")
+        head = {"ok": "【完全命中】", "confirm": "【待确认】",
+                "fail": "【没有选中】"}.get(stage, "【待确认】")
         self.status_text = f"{head}：{tr.get('title') or tr.get('reason') or ''}"[:60]
 
         from kivy.uix.scrollview import ScrollView
@@ -658,7 +660,9 @@ class SongGrabApp(App):
             return w
 
         self._trial_view = view
-        box.add_widget(lab(head, size=15, h=dp(28)))
+        head_color = {"ok": (0.45, 0.86, 0.55, 1), "confirm": (0.95, 0.78, 0.35, 1),
+                      "fail": (0.95, 0.50, 0.50, 1)}.get(stage, (0.9, 0.9, 0.9, 1))
+        box.add_widget(lab(head, size=16, h=dp(30), color=head_color))
         box.add_widget(self._artist_row(raw, tr))
         box.add_widget(lab(f"原因：{tr.get('reason', '')}", size=11))
 
@@ -914,11 +918,11 @@ class SettingsScreen(Screen):
             from kivy.uix.button import Button
             row.add_widget(Label(text=w, font_name=FONT, halign="left", valign="middle",
                                  text_size=(None, None)))
-            row.add_widget(Button(text="↑", size_hint_x=None, width=dp(40), font_name=FONT,
+            row.add_widget(Button(text="上", size_hint_x=None, width=dp(44), font_name=FONT,
                                   on_release=lambda *_, i=i: self.move(i, -1)))
-            row.add_widget(Button(text="↓", size_hint_x=None, width=dp(40), font_name=FONT,
+            row.add_widget(Button(text="下", size_hint_x=None, width=dp(44), font_name=FONT,
                                   on_release=lambda *_, i=i: self.move(i, 1)))
-            row.add_widget(Button(text="✕", size_hint_x=None, width=dp(40), font_name=FONT,
+            row.add_widget(Button(text="删", size_hint_x=None, width=dp(44), font_name=FONT,
                                   on_release=lambda *_, i=i: self.delete(i)))
             box.add_widget(row)
 

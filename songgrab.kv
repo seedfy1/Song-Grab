@@ -47,8 +47,8 @@
 <ResultRow>:
     orientation: 'horizontal'
     size_hint_y: None
-    height: dp(54)
-    padding: dp(10), dp(4)
+    height: dp(60)
+    padding: dp(10), dp(6)
     spacing: dp(6)
     canvas.before:
         Color:
@@ -61,6 +61,7 @@
         text: root.song
         font_name: app.font_name
         font_size: sp(15)
+        padding: dp(2), 0
         halign: 'left'
         valign: 'middle'
         size_hint_x: 0.42
@@ -159,19 +160,18 @@
         Label:
             text: '提示：歌名+歌手，用加号，如 晴天+周杰伦；不加加号则整串当歌名'
             font_name: app.font_name
-            font_size: sp(10)
-            color: 0.48, 0.50, 0.58, 1
+            font_size: sp(11)
+            color: 0.52, 0.54, 0.62, 1
             size_hint_y: None
-            height: dp(17)
+            height: dp(34)
             halign: 'left'
             valign: 'middle'
             text_size: self.width, None
-            shorten: True
 
         # ---------- 输出去向 ----------
         BoxLayout:
             size_hint_y: None
-            height: dp(30)
+            height: dp(34)
             spacing: dp(6)
             Label:
                 text: '输出：' + app.out_dir
@@ -207,12 +207,12 @@
             text: app.status_text
             font_name: app.font_name
             font_size: sp(12)
-            color: 0.70, 0.72, 0.80, 1
+            color: 0.72, 0.74, 0.82, 1
             size_hint_y: None
-            height: dp(22)
+            height: dp(38)
             halign: 'left'
+            valign: 'middle'
             text_size: self.width, None
-            shorten: True
 
         BoxLayout:
             size_hint_y: None
@@ -249,43 +249,49 @@
                 height: self.minimum_height
                 spacing: dp(5)
 
-        # ---------- 底栏 ----------
+        # ---------- 底栏（两行，避免 5 个按钮挤在一起把字压扁） ----------
         BoxLayout:
             size_hint_y: None
-            height: dp(42)
+            height: dp(44)
             spacing: dp(6)
             Button:
                 text: '打开目录'
                 font_name: app.font_name
-                font_size: sp(12)
+                font_size: sp(13)
                 background_normal: ''
                 background_color: 0.25, 0.27, 0.33, 1
                 on_release: app.do_open_folder()
             Button:
                 text: '重试失败'
                 font_name: app.font_name
-                font_size: sp(12)
+                font_size: sp(13)
                 background_normal: ''
                 background_color: 0.25, 0.27, 0.33, 1
                 on_release: app.retry_failed()
             Button:
                 text: '复制失败'
                 font_name: app.font_name
-                font_size: sp(12)
+                font_size: sp(13)
                 background_normal: ''
                 background_color: 0.25, 0.27, 0.33, 1
                 on_release: app.copy_failed()
+
+        BoxLayout:
+            size_hint_y: None
+            height: dp(44)
+            spacing: dp(6)
             Button:
                 text: ('未确认：跳过' if app.require_confirm else '未确认：也下')
                 font_name: app.font_name
-                font_size: sp(11)
+                font_size: sp(13)
                 background_normal: ''
                 background_color: (0.20, 0.34, 0.28, 1) if app.require_confirm else (0.34, 0.26, 0.20, 1)
                 on_release: app.toggle_require_confirm()
             Button:
                 text: '清空'
                 font_name: app.font_name
-                font_size: sp(12)
+                font_size: sp(13)
+                size_hint_x: 0.45
                 background_normal: ''
                 background_color: 0.25, 0.27, 0.33, 1
                 on_release: root.clear_rows()
