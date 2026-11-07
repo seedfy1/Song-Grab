@@ -140,6 +140,20 @@ _ALBUM_WORD_DUR = 8 * 60
 
 WHITELIST_UPS = ("JLRS日落fm", "JLRS-LeoFM", "JLRS-jayfm")
 
+# 用户在歌名里自己写了这类词 → 说明他就是要翻唱/现场/伴奏/器乐版本，
+# 这时「非正片」类过滤会把想要的候选全剔光，必须放过（§2 注：意图优先）。
+_USER_WANT_RX = re.compile(
+    r"(翻唱|翻自|cover|" + _en("live") + r"|现场|演唱会|不插电|concert|"
+    r"伴奏|纯音乐|器乐|演奏|钢琴|吉他|指弹|古筝|民乐|"
+    r"remix|混音|" + _en("remix") + r"|mashup|串烧|dj|"
+    r"鬼畜|二创|调教|" + _en("mad") + r"|mmd|"
+    r"片段|剪辑|切片|短版|"
+    r"合唱|群星|男声|女声|童声|戏腔|女声版|男声版|童声版|"
+    r"升key|降key|升调|降调|变速|加速|减速|慢速|8d|环绕|"
+    r"demo|试听|试唱|清唱|"
+    r"AI\s*翻唱|sovits|" + _en("diffsinger") + ")",
+    re.IGNORECASE)
+
 WL_BLOCK_RX = re.compile(
     r"合唱|三人合唱|多人合唱|大合唱|万人合唱|接力合唱|接龙|全员合唱|群星|分声部|"
     r"多声部|三声部|混声合唱|轮唱|和声|伴唱|阿卡贝拉|无伴奏|纯人声|单人阿卡贝拉|"
@@ -438,7 +452,11 @@ class _Reject(Exception):
 def _filter_chain(cards: Sequence[Any], keyword: str, *,
                   min_dur: int, max_dur: int, min_play: int,
                   canonical: str = "", ref_dur: int = 0,
-                  pool_notes: list[str] | None = None) -> list[Cand]:
+                  pool_notes: list[str] | None = None,
+                  lenient: bool = False) -> list[Cand]:
+    """lenient=True：用户自己要的就是翻唱/现场/器乐这类版本，
+    内容类过滤（非正片黑名单、二创壳、反应、伴奏、器乐）一律放过，
+    只保留时长/播放量/专辑/片段这些与"是不是这首"无关的闸。"""
     notes = pool_notes if pool_notes is not None else []
     pool = [as_cand(c) for c in cards]
 
@@ -448,34 +466,37 @@ def _filter_chain(cards: Sequence[Any], keyword: str, *,
     if not pool:
         raise _Reject("候选池无正片（标题都不含歌名）")
 
-    pool = [c for c in pool if not TITLE_BLOCK.search(c.title)]
-    if not pool:
-        raise _Reject("候选池无正片（全是教程/翻唱/解说）")
+    if lenient:
+        notes.append("按你要的版本搜，跳过正片过滤")
+    else:
+        pool = [c for c in pool if not TITLE_BLOCK.search(c.title)]
+        if not pool:
+            raise _Reject("候选池无正片（全是教程/翻唱/解说）")
 
-    pool = [c for c in pool if not _TITLE_INSTR_RX.search(c.title)]
-    if not pool:
-        raise _Reject("候选池无正片（全是器乐改编）")
+        pool = [c for c in pool if not _TITLE_INSTR_RX.search(c.title)]
+        if not pool:
+            raise _Reject("候选池无正片（全是器乐改编）")
 
-    kept: list[Cand] = []
-    shells = 0
-    for c in pool:
-        if shell_of(c.title, keyword, canonical):
-            shells += 1
-            continue
-        kept.append(c)
-    if not kept:
-        raise _Reject("候选池无正片（全是鬼畜/二创壳）")
-    if shells:
-        notes.append(f"剔掉 {shells} 条二创壳")
-    pool = kept
+        kept: list[Cand] = []
+        shells = 0
+        for c in pool:
+            if shell_of(c.title, keyword, canonical):
+                shells += 1
+                continue
+            kept.append(c)
+        if not kept:
+            raise _Reject("候选池无正片（全是鬼畜/二创壳）")
+        if shells:
+            notes.append(f"剔掉 {shells} 条二创壳")
+        pool = kept
 
-    pool = [c for c in pool if not _REACTION_RX.search(c.title)]
-    if not pool:
-        raise _Reject("候选池无正片（全是反应/解说）")
+        pool = [c for c in pool if not _REACTION_RX.search(c.title)]
+        if not pool:
+            raise _Reject("候选池无正片（全是反应/解说）")
 
-    pool = [c for c in pool if not _KARAOKE_RX.search(c.title)]
-    if not pool:
-        raise _Reject("候选池无正片（全是伴奏/消音）")
+        pool = [c for c in pool if not _KARAOKE_RX.search(c.title)]
+        if not pool:
+            raise _Reject("候选池无正片（全是伴奏/消音）")
 
     pool = [c for c in pool if c.duration == 0 or min_dur <= c.duration <= max_dur]
     if not pool:
@@ -514,8 +535,6 @@ def _filter_chain(cards: Sequence[Any], keyword: str, *,
 
     for c in pool:
         c.kind = kind_of(c.title)
-    if pool and all(c.kind == 2 for c in pool):
-        raise _Reject("候选池无正片（全是翻唱/器乐改编）")
 
     return pool
 
@@ -538,15 +557,32 @@ def pick(
     priority_words: Sequence[str] | None = None,
     canonical: str = "",
     ref_dur: int = 0,
+    want: str = "",
 ) -> Picked:
     notes: list[str] = []
+    lenient = bool(_USER_WANT_RX.search(want or keyword or ""))
     try:
         pool = _filter_chain(
             cards, keyword, min_dur=min_dur, max_dur=max_dur, min_play=min_play,
-            canonical=canonical, ref_dur=ref_dur, pool_notes=notes,
+            canonical=canonical, ref_dur=ref_dur, pool_notes=notes, lenient=lenient,
         )
     except _Reject as e:
-        return Picked(None, e.reason, stage="fail")
+        # 硬过滤把池子剔光了：不直接判失败，退回「只要求标题含歌名」的全集，
+        # 给前三条让人自己挑（宁可多给候选，也不要 0 结果）。
+        fallback = [as_cand(c) for c in cards]
+        for c in fallback:
+            c.rank = match_rank(c.title, keyword)
+        fallback = [c for c in fallback if c.rank > 0]
+        if not fallback:
+            return Picked(None, e.reason, stage="fail")
+        clip_hit = bool(ref_dur) and any(
+            c.duration and c.duration < ref_dur * 0.8 for c in fallback)
+        for c in fallback:
+            c.kind = kind_of(c.title)
+            c.score = score_of(c, canonical, ref_dur, clip_hit)
+        fallback.sort(key=lambda c: (c.kind == 0, c.score, c.play), reverse=True)
+        return Picked(fallback[0], f"{e.reason}；已放宽过滤，给你前三条待选",
+                      pool=fallback, top=fallback[:3], stage="confirm")
 
     clip_hit = bool(ref_dur) and any(
         c.duration and c.duration < ref_dur * 0.8 for c in pool)
@@ -575,6 +611,11 @@ def pick(
     if hq:
         hq.sort(key=lambda c: c.score, reverse=True)
         return Picked(hq[0], "高音质档置顶", pool=pool, top=pool[:5], stage="ok")
+
+    if not lenient and pool and all(c.kind == 2 for c in pool):
+        # 全是翻唱/器乐：不给结论，但把前三条交出去让人挑（§2 末）
+        return Picked(pool[0], "候选池全是翻唱/器乐改编，取加权前三待确认",
+                      pool=pool, top=pool[:3], stage="confirm")
 
     reason = "加权排序第一"
     if len(pool) > 1 and abs(pool[0].score - pool[1].score) < 1e-9:

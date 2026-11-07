@@ -89,14 +89,16 @@ def _fetch_seed() -> bytes | None:
 def check_and_update(code_dir: Path = CODE_DIR) -> tuple[bool, str]:
     """检查并应用代码更新。返回 (是否更新, 说明)。"""
     remote = None
+    errs: list[str] = []
     for u in UPDATE_VERSION_URLS:
         try:
             remote = json.loads(_http_get(u, 15).decode("utf-8", "ignore"))
             break
-        except Exception:
+        except Exception as e:
+            errs.append(f"{u.split('/')[2]}:{type(e).__name__}")
             continue
     if not isinstance(remote, dict):
-        return False, ""
+        return False, ("检查失败 " + "；".join(errs)) if errs else ""
     rv = str(remote.get("build") or "").strip()
     if not rv:
         return False, ""
@@ -381,14 +383,43 @@ class SongGrabApp(App):
         return root
 
     def _auto_update(self):
+        """启动时检查代码更新。全程写 sg-update.log —— 以前异常被静默吞掉，
+        用户只看到"没更新"，却查不出是网络、证书还是解包的问题。"""
+        import time as _t
+        import traceback
+        log = Path("/sdcard/Music/SongGrab/sg-update.log")
+
+        def _w(msg: str) -> None:
+            try:
+                log.parent.mkdir(parents=True, exist_ok=True)
+                with log.open("a", encoding="utf-8") as f:
+                    f.write(f"[{_t.strftime('%m-%d %H:%M:%S')}] {msg}\n")
+            except Exception:
+                pass
+
         try:
+            local = ""
+            try:
+                local = (CODE_DIR / ".version").read_text(encoding="utf-8").strip()
+            except Exception:
+                pass
+            _w(f"检查更新：本地 {local or '(无)'}")
             ok, note = check_and_update()
-        except Exception:
+            _w(f"结果：{'已更新，' + note if ok else '无更新/' + (note or '已是最新')}")
+        except Exception as e:
+            _w("更新异常：" + type(e).__name__ + ": " + str(e) + "\n"
+               + traceback.format_exc())
             return
         if ok:
-            Clock.schedule_once(
-                lambda dt: setattr(self, "status_text",
-                                   f"代码已更新（{note}），重开 App 生效"), 0)
+            Clock.schedule_once(lambda dt: self._notify_updated(note), 0)
+
+    def _notify_updated(self, note: str) -> None:
+        """更新完成后给个不容易漏掉的提示（状态栏会被后续事件覆盖）。"""
+        self.status_text = f"代码已更新（{note}），重开 App 生效"
+        try:
+            PromptView("代码已更新，重开 App 后生效", lambda: None).open()
+        except Exception:
+            pass
 
     def _leave_splash(self, _dt):
         try:
@@ -650,8 +681,12 @@ class SongGrabApp(App):
         PromptView(
             f"改曲师（留空 = {core.UNNAMED}）\n当前：{cur or core.UNNAMED}", ok).open()
 
-    def _show_trial(self, raw: str, tr: dict):
-        """§8.5 三档结果框：完全命中 / 待确认（带候选卡）/ 失败原因。"""
+    def _show_trial(self, raw: str, tr: dict, cb: dict | None = None):
+        """§8.5 三档结果框：完全命中 / 待确认（带候选卡）/ 失败原因。
+
+        cb 不为空 = 逐首确认模式：
+          {"pick": fn(cand), "skip": fn(), "stop": fn(), "n": 序号, "m": 总数}
+        """
         self.trial_src_artist[raw] = tr.get("artist", "")
         from kivy.uix.button import Button
         from kivy.uix.label import Label
@@ -673,6 +708,8 @@ class SongGrabApp(App):
         self._trial_view = view
         head_color = {"ok": (0.45, 0.86, 0.55, 1), "confirm": (0.95, 0.78, 0.35, 1),
                       "fail": (0.95, 0.50, 0.50, 1)}.get(stage, (0.9, 0.9, 0.9, 1))
+        if cb:
+            head = f"{head[0]}{cb.get('n', 1)}/{cb.get('m', 1)}{head[1:]}  第 {cb.get('n', 1)} 首"
         box.add_widget(lab(head, size=16, h=dp(30), color=head_color))
         box.add_widget(self._artist_row(raw, tr))
         box.add_widget(lab(f"原因：{tr.get('reason', '')}", size=11))
@@ -692,23 +729,48 @@ class SongGrabApp(App):
             row.add_widget(Button(
                 text="用这首", font_name=FONT, font_size=sp(11),
                 size_hint_x=None, width=dp(74),
-                on_release=lambda *_ , c=c: (self._confirm_source(raw, c), view.dismiss())))
+                on_release=lambda *_ , c=c: self._trial_choose(raw, c, cb, view)))
             inner.add_widget(row)
         sv.add_widget(inner)
         box.add_widget(sv)
 
         btns = BoxLayout(size_hint_y=None, height=dp(44), spacing=dp(6))
-        btns.add_widget(Button(text="关闭", font_name=FONT,
-                               on_release=lambda *_: view.dismiss()))
-        if tr.get("bvid"):
+        if cb:
             btns.add_widget(Button(
-                text="下载这首", font_name=FONT,
-                on_release=lambda *_ , t=tr: (self._confirm_source(
-                    raw, {"bvid": t["bvid"], "artist": t.get("artist", ""),
-                          "title": t.get("title", "")}), view.dismiss())))
+                text="跳过这首", font_name=FONT,
+                on_release=lambda *_: (view.dismiss(), cb["skip"]())))
+            if tr.get("bvid"):
+                btns.add_widget(Button(
+                    text="就这首，继续", font_name=FONT,
+                    on_release=lambda *_ , t=tr: (view.dismiss(), cb["pick"]({
+                        "bvid": t["bvid"], "artist": t.get("artist", ""),
+                        "title": t.get("title", "")}))))
+            btns.add_widget(Button(
+                text="不确认了", font_name=FONT,
+                on_release=lambda *_: (view.dismiss(), cb["stop"]())))
+        else:
+            btns.add_widget(Button(text="关闭", font_name=FONT,
+                                   on_release=lambda *_: view.dismiss()))
+            if tr.get("bvid"):
+                btns.add_widget(Button(
+                    text="下载这首", font_name=FONT,
+                    on_release=lambda *_ , t=tr: (self._confirm_source(
+                        raw, {"bvid": t["bvid"], "artist": t.get("artist", ""),
+                              "title": t.get("title", "")}), view.dismiss())))
         box.add_widget(btns)
         view.add_widget(box)
         view.open()
+
+    def _trial_choose(self, raw: str, cand: dict, cb: dict | None, view) -> None:
+        """候选行「用这首」。逐首确认模式走回调，否则按老路写进 confirmed。"""
+        view.dismiss()
+        if self._trial_view is view:
+            self._trial_view = None
+        if cb:
+            self.trial_src_artist[raw] = cand.get("artist", "") or self.trial_src_artist.get(raw, "")
+            cb["pick"](cand)
+        else:
+            self._confirm_source(raw, cand)
 
     def _confirm_source(self, raw: str, cand: dict):
         """记住用户选定的音源，并把该曲目加入「待下载」。"""
@@ -814,20 +876,12 @@ class SongGrabApp(App):
         for raw in self.ctrl.parse_songs(text):
             got = self.confirmed.get(raw) or {}
             # 粘链接或 BV 号 → 直接按那个视频下，不走搜索
+            # 这里不联网（否则点「开始下载」会卡住），歌名由后台线程取标题洗出来
             bvid = core.scan_bvid(raw) or got.get("bvid", "")
             if bvid and not got.get("bvid"):
-                info = None
-                try:
-                    info = core.video_info(bvid)
-                except Exception:
-                    info = None
-                if info:
-                    song = core.clean_video_title(info.title) or raw
-                    artist = core.artist_from_title(info.title, song) or ""
-                    self.status_text = f"按链接处理：{song}"
-                    items.append({"raw": raw, "song": song, "hint": "",
-                                  "bvid": bvid, "artist": artist, "no_artist": False})
-                    continue
+                items.append({"raw": raw, "song": "", "hint": "",
+                              "bvid": bvid, "artist": "", "no_artist": False})
+                continue
             song, hint = core.parse_song_entry(raw)
             # 用户主动标「未命名」（改曲师时留空）→ 下载阶段不查也不写作者
             lock = raw in self.trial_artist and not self.trial_artist[raw]
@@ -842,13 +896,20 @@ class SongGrabApp(App):
         if not items:
             self.status_text = "没有歌名"
             return
-        main: MainScreen = self.sm.get_screen("main")
-        main.clear_rows()
         self.failed_songs = []
         self.pending_cands = {}
+        if self.require_confirm:
+            # 逐首试搜 → 弹窗确认 → 下一首；确认完才批量下载
+            self._begin_confirm_flow(items)
+            return
+        self._run_items(items)
+
+    def _run_items(self, items: list) -> None:
+        main: MainScreen = self.sm.get_screen("main")
+        main.clear_rows()
         cfg = dict(self.cfg)
         cfg["output_dir"] = self.out_dir
-        cfg["require_confirm"] = bool(self.require_confirm)
+        cfg["require_confirm"] = False          # 人工确认已经做完了
         if self.ctrl.start(items, cfg):
             self.running = True
             self.progress = 0
@@ -856,7 +917,95 @@ class SongGrabApp(App):
         else:
             self.status_text = "已有任务在跑"
 
+    # ---------- 逐首确认（require_confirm=True 时走这条） ----------
+    def _begin_confirm_flow(self, items: list) -> None:
+        self._flow_items = list(items)
+        self._flow_ok: list = []
+        self._flow_idx = 0
+        self._flow_stop = False
+        self.status_text = f"逐首确认：共 {len(items)} 首，先试搜第 1 首"
+        Clock.schedule_once(lambda dt: self._next_trial(), 0)
+
+    def _next_trial(self) -> None:
+        if self._flow_stop:
+            self._finish_confirm_flow()
+            return
+        if self._flow_idx >= len(self._flow_items):
+            self._finish_confirm_flow()
+            return
+        item = self._flow_items[self._flow_idx]
+        raw = item["raw"]
+        got = self.confirmed.get(raw) or {}
+        # 已经确认过的（上次记住的音源 / 粘的链接）不再试搜
+        if got.get("bvid") or item.get("bvid"):
+            self._flow_ok.append(dict(item,
+                                      bvid=item.get("bvid") or got.get("bvid", ""),
+                                      artist=item.get("artist") or got.get("artist", "")))
+            self._flow_idx += 1
+            Clock.schedule_once(lambda dt: self._next_trial(), 0)
+            return
+        song = item.get("song") or core.parse_song_entry(raw)[0] or raw
+        self.status_text = (f"试搜 {self._flow_idx + 1}/{len(self._flow_items)}：{song}"
+                            "（确认后继续下一首）")
+        cfg = dict(self.cfg)
+        cfg["output_dir"] = self.out_dir
+
+        def work():
+            try:
+                tr = core.trial_song(raw, cfg)
+            except Exception as e:
+                tr = {"stage": "fail", "reason": f"试搜失败：{e}", "song": song}
+            Clock.schedule_once(lambda dt: self._ask_one(item, tr), 0)
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def _ask_one(self, item: dict, tr: dict) -> None:
+        """弹窗让用户确认这一首；确认/跳过后自动试搜下一首。"""
+        raw = item["raw"]
+
+        def _next() -> None:
+            self._flow_idx += 1
+            Clock.schedule_once(lambda dt: self._next_trial(), 0)
+
+        def pick(cand: dict) -> None:
+            art = self.trial_artist.get(raw, None)
+            if art is None:
+                art = cand.get("artist") or self.trial_src_artist.get(raw, "")
+            self.confirmed[raw] = {"bvid": cand.get("bvid", ""), "artist": art,
+                                   "title": cand.get("title", "")}
+            self._save_confirm()
+            self._flow_ok.append(dict(item, bvid=str(cand.get("bvid", "")),
+                                      artist=str(art or "")))
+            _next()
+
+        def skip() -> None:
+            _next()
+
+        def stop() -> None:
+            self._flow_stop = True
+            Clock.schedule_once(lambda dt: self._finish_confirm_flow(), 0)
+
+        self._show_trial(raw, tr, cb={"pick": pick, "skip": skip, "stop": stop,
+                                      "n": self._flow_idx + 1,
+                                      "m": len(self._flow_items)})
+
+    def _finish_confirm_flow(self) -> None:
+        items, self._flow_ok = self._flow_ok, []
+        n_all = len(self._flow_items or [])
+        if not items:
+            self.status_text = f"没有确认的曲目（共 {n_all} 首，全部跳过）"
+            return
+        self.status_text = f"已确认 {len(items)}/{n_all} 首，开始下载"
+        self._run_items(items)
+
     def stop_download(self):
+        if getattr(self, "_flow_stop", None) is False:
+            self._flow_stop = True
+            if self._trial_view is not None:
+                self._trial_view.dismiss()
+                self._trial_view = None
+            self.status_text = "已停止逐首确认"
+            return
         self.ctrl.stop()
         self.status_text = "正在停止…（当前这首下完就停）"
 

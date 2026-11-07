@@ -803,6 +803,7 @@ def trial_song(raw: str, cfg: dict[str, Any], progress=None) -> dict[str, Any]:
         return _sel.pick(
             cards, song, min_play=min_play, min_dur=min_dur, max_dur=max_dur,
             priority_words=words, canonical=canon, ref_dur=ref_dur,
+            want=f"{song} {hint}",
         )
 
     kw = f"{song} {artist}".strip() if artist else song
@@ -834,7 +835,10 @@ def trial_song(raw: str, cfg: dict[str, Any], progress=None) -> dict[str, Any]:
         base["reason"] = picked.reason or "无搜索结果"
         return base
 
-    if branch1 and picked.cand is not None and canonical:
+    if picked.stage == "confirm":
+        stage = "confirm"
+        reason = picked.reason or "待确认：候选池全是翻唱/器乐改编"
+    elif branch1 and picked.cand is not None and canonical:
         top = picked.cand
         full = (normalize(song) in normalize(top.title)
                 and normalize(canonical) in normalize(top.title))

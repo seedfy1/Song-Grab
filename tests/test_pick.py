@@ -47,11 +47,29 @@ def test_kind_of():
 
 
 # ---------------------------------------------------------------- §2 硬过滤
-def test_all_covers_rejected():
+def test_all_covers_goes_to_confirm():
+    """全是翻唱/器乐：不再判失败，交前三名待确认（用户可自己挑）。"""
     cards = [C("晴天 cover 翻唱"), C("晴天 钢琴版"), C("晴天 纯音乐 钢琴")]
     r = pick(cards, "晴天")
-    assert r.cand is None, r.reason
-    assert "翻唱" in r.reason or "器乐" in r.reason
+    assert r.stage == "confirm", r.reason
+    assert r.cand is not None, r.reason
+    assert 1 <= len(r.top) <= 3
+
+
+def test_want_cover_skips_content_filters():
+    """歌名里自己写了「翻唱」→ 跳过正片过滤，直接给结果。"""
+    cards = [C("晴天 翻唱版 男声"), C("晴天 cover by 小王")]
+    r = pick(cards, "晴天 翻唱", want="晴天 翻唱")
+    assert r.stage == "ok", r.reason
+    assert r.cand is not None
+
+
+def test_reject_falls_back_to_candidates():
+    """时长闸把池子剔光也要给候选，不能 0 结果。"""
+    cards = [C("晴天 整张专辑连播", 5000, 3000), C("晴天 全集", 9000, 2500)]
+    r = pick(cards, "晴天")
+    assert r.stage == "confirm", r.reason
+    assert r.cand is not None
 
 
 def test_album_and_long_rejected():
