@@ -790,7 +790,7 @@ class SettingsScreen(Screen):
         app.cookie_hint = pc.cookies_hint()
         # 这些必须在主线程做，之前被误放进 _check_ffmpeg 线程里，进设置页就报错
         self.ids.out_input.text = app.out_dir
-        self.ids.play_input.text = str(app.cfg.get("min_play", 10000))
+        self.ids.play_input.text = str(app.cfg.get("min_play", 1))
         self.prio = list(app.cfg.get("priority_words") or [])
         self.refresh_prio()
         if not app.ffmpeg_hint:
@@ -848,7 +848,7 @@ class SettingsScreen(Screen):
         app: SongGrabApp = App.get_running_app()  # type: ignore[assignment]
         app.out_dir = self.ids.out_input.text.strip() or str(pc.default_output_dir())
         try:
-            app.cfg["min_play"] = max(0, int(self.ids.play_input.text.strip() or "10000"))
+            app.cfg["min_play"] = max(0, int(self.ids.play_input.text.strip() or "1"))
         except ValueError:
             pass
         app.cfg["output_dir"] = app.out_dir

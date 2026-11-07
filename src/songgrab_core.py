@@ -339,6 +339,7 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     "min_play": 1,               # 播放量门槛，默认只挡 play==0（冻结文档 §2.8）
     "min_dur": 50,               # 最短时长（秒，冻结文档 §2.7）
     "max_dur": 720,              # 最长时长（秒）
+    "rules": 2,                  # 选片规则版本；1 = 冻结版之前的老门槛
     "priority_words": list(DEFAULT_PRIORITY),
     "use_cookies": False,
     "last_txt_dir": "",
@@ -350,16 +351,25 @@ _LEGACY_PRIORITY = ["本家", "百万级装备听", "百万级录音棚听"]
 
 def load_settings() -> dict[str, Any]:
     cfg = dict(DEFAULT_SETTINGS)
+    raw: dict[str, Any] = {}
     try:
         if SETTINGS_FILE.exists():
             data = json.loads(SETTINGS_FILE.read_text(encoding="utf-8"))
             if isinstance(data, dict):
+                raw = data
                 cfg.update({k: v for k, v in data.items() if k in DEFAULT_SETTINGS})
     except Exception:
         pass
     # 迁移：旧版预置的三个词条清掉，让用户自己加
     if cfg.get("priority_words") == _LEGACY_PRIORITY:
         cfg["priority_words"] = []
+    # 迁移：选片规则换成冻结版后，老门槛（播放量 1 万 / 时长 90s）会把
+    # 合格候选挡在外面（§2 ⑦⑧ 默认 50–720s、play>=1），这里一次性重置
+    if int(raw.get("rules") or 1) < 2:
+        cfg["min_play"] = DEFAULT_SETTINGS["min_play"]
+        cfg["min_dur"] = DEFAULT_SETTINGS["min_dur"]
+        cfg["max_dur"] = DEFAULT_SETTINGS["max_dur"]
+        cfg["rules"] = 2
     return cfg
 
 
