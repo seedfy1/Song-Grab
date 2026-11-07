@@ -123,7 +123,7 @@ def test_no_artist_locks_unnamed():
 
     def fake_process(song, cfg, workdir, progress=None, **k):
         seen.update(k)
-        return core.SongResult(song, "ok", "下完了", "晴天+未命名.m4a",
+        return core.SongResult(song, "ok", "下完了", "晴天.m4a",
                                bvid=k.get("bvid", ""), artist="")
 
     old_p = core.process_song
@@ -164,6 +164,68 @@ def test_stale_bvid_falls_back_to_trial():
         assert "搜索无结果" in res.reason, res.reason
     finally:
         core.video_info, core.trial_song, core.ARTISTS_FILE = old_i, old_t, old_a
+
+
+def test_filename_is_song_only_and_tag_unknown():
+    """文件名只写歌名；作者进音频标签；曲师缺失（或用户清空）标签记 Unknown。"""
+    import tempfile
+
+    seen = {}
+    old = (core.download_audio, core.convert_to_m4a, core.probe_duration,
+           core.video_info, core.append_catalog, core.load_artists,
+           core.save_artist)
+
+    def fake_dl(bvid, workdir, use_cookies=False):
+        p = Path(workdir) / "raw.webm"
+        Path(workdir).mkdir(parents=True, exist_ok=True)
+        p.write_bytes(b"\0" * (120 * 1024))
+        return p
+
+    def fake_conv(src, dst, title="", artist=""):
+        Path(dst).write_bytes(b"\0" * 1024)
+        seen["title"] = title
+        seen["artist"] = artist
+        seen["dst"] = Path(dst).name
+
+    try:
+        core.download_audio = fake_dl
+        core.convert_to_m4a = fake_conv
+        core.probe_duration = lambda _p: 200.0
+        core.video_info = lambda bvid: core.Card(bvid, "周杰伦《晴天》", 100, 269, "UP")
+        core.append_catalog = lambda *a, **k: None
+        core.load_artists = lambda: {}
+        core.save_artist = lambda *a, **k: None
+        with tempfile.TemporaryDirectory() as d:
+            out, work = Path(d) / "out", Path(d) / "work"
+            out.mkdir()
+            work.mkdir()
+            cfg = {"output_dir": str(out)}
+
+            res = core.process_song("晴天", cfg, work, bvid="BV1x",
+                                    artist="", no_artist=True)
+            assert res.status == "ok", (res.status, res.reason)
+            assert seen["dst"] == "晴天.m4a", seen
+            assert seen["artist"] == core.UNNAMED, seen
+            assert seen["title"] == "晴天", seen
+            assert (out / "晴天.m4a").exists()
+
+            # 有作者：文件名仍不带作者，作者只进标签
+            res2 = core.process_song("稻香", cfg, work, bvid="BV1y",
+                                     artist="周杰伦")
+            assert res2.status == "ok", (res2.status, res2.reason)
+            assert seen["dst"] == "稻香.m4a", seen
+            assert seen["artist"] == "周杰伦", seen
+
+            # 老命名（歌名+作者.m4a）仍当作已存在，不会重复下载
+            (out / "发如雪+周杰伦.m4a").write_bytes(b"\0" * 1024)
+            res3 = core.process_song("发如雪", cfg, work, bvid="BV1z",
+                                     artist="周杰伦")
+            assert res3.status == "skip", (res3.status, res3.reason)
+            assert res3.file == "发如雪+周杰伦.m4a", res3.file
+    finally:
+        (core.download_audio, core.convert_to_m4a, core.probe_duration,
+         core.video_info, core.append_catalog, core.load_artists,
+         core.save_artist) = old
 
 
 if __name__ == "__main__":

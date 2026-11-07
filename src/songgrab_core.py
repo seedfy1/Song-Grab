@@ -58,6 +58,9 @@ SETTINGS_FILE = _pc.settings_file()
 
 CONFIRM_FILE = _pc.data_dir() / "confirm.json"
 
+# 曲师缺失时写进音频标签的占位名。文件名只用歌名，作者靠标签呈现。
+UNNAMED = "Unknown"
+
 SEARCH_API = "https://api.bilibili.com/x/web-interface/wbi/search/type"
 VIEW_API = "https://api.bilibili.com/x/web-interface/view"
 UA = (
@@ -1061,6 +1064,7 @@ def _m4a_ok(path: Path) -> bool:
 
 
 def convert_to_m4a(src: Path, dst: Path, title: str, artist: str) -> None:
+    src, dst = Path(src), Path(dst)   # 外部/测试传 str 也别崩在 resolve() 上
     exe = Path(FFMPEG) if FFMPEG else None
     if exe and Path(exe).exists():
         cmd = [
@@ -1174,11 +1178,16 @@ def append_catalog(out_dir: Path, entry: dict[str, Any]) -> None:
 
 
 def find_existing(out_dir: Path, song: str) -> Path | None:
-    """幂等：同歌名的成品已存在则返回它。"""
-    prefix = sanitize_filename(song) + "+"
+    """幂等：同歌名的成品已存在则返回它。
+
+    兼容两种命名：新的「歌名.m4a」和老版本的「歌名+作者.m4a」。
+    """
+    base = sanitize_filename(song)
     try:
         for p in out_dir.iterdir():
-            if p.is_file() and p.suffix.lower() == ".m4a" and p.name.startswith(prefix):
+            if not (p.is_file() and p.suffix.lower() == ".m4a"):
+                continue
+            if p.stem == base or p.stem.startswith(base + "+"):
                 return p
     except Exception:
         pass
@@ -1326,7 +1335,10 @@ def process_song(
     artist_hint = 用户用 `+` 写的作者
     artist      = 界面确认/改过的作者
     bvid        = 界面已确认的候选
-    no_artist   = 用户主动标「未命名」：不查作者、不写作者，文件名叫「歌名+未命名」
+    no_artist   = 用户主动清空曲师：不查作者，标签记 UNNAMED，文件名仍用歌名
+
+    命名规则：文件名 = 纯歌名.m4a；作者写进音频标签（title/artist），
+    缺失时标签记 UNNAMED（Unknown）。
     """
     say = progress or (lambda *a, **k: None)
     out_dir = resolve_output_dir(cfg)
@@ -1334,16 +1346,9 @@ def process_song(
 
     artist = "" if no_artist else (artist or artist_hint or "").strip()
 
-    # 已有成品：曲师变了就顺手改名，避免补表后留下旧名字
+    # 已有成品直接跳过（文件名只含歌名，与曲师无关）
     existing = find_existing(out_dir, song)
     if existing:
-        if artist:
-            want = sanitize_filename(f"{song}+{artist}") + ".m4a"
-            if existing.name != want:
-                try:
-                    existing = existing.rename(out_dir / want)
-                except Exception:
-                    pass
         return SongResult(song, "skip", "已存在", existing.name, artist=artist)
 
     card: Card | None = None
@@ -1382,10 +1387,12 @@ def process_song(
         artist = artists.get(song, "").strip()
 
     pending = False
-    if not artist and not no_artist:
-        artist = (card.author or "").strip() or "未知"
-        pending = True
-        say("artist", f"未查到曲师，暂用 UP 主「{artist}」")
+    if not artist:
+        # 查不到曲师（或用户主动清空）：标签记 Unknown，不拿 UP 主名冒充歌手
+        pending = not no_artist
+        artist = UNNAMED
+        if pending:
+            say("artist", f"未查到曲师，标签记为 {UNNAMED}")
 
     raw = None
     try:
@@ -1394,10 +1401,10 @@ def process_song(
         if raw.stat().st_size < 100 * 1024:
             raise RuntimeError("下载文件过小")
 
-        fname = sanitize_filename(f"{song}+{artist or '未命名'}") + ".m4a"
+        fname = sanitize_filename(song) + ".m4a"
         dst = out_dir / fname
         say("convert", "转封装…")
-        convert_to_m4a(raw, dst, title=song, artist=artist)
+        convert_to_m4a(raw, dst, title=song, artist=artist or UNNAMED)
 
         dur = probe_duration(dst)
         if dur <= 0:

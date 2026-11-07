@@ -613,7 +613,7 @@ class SongGrabApp(App):
         if raw in self.trial_artist:
             src = "手动"
         text = (f"曲师：{art}（{src}）     改" if art
-                else "曲师：未命名     点此填写")
+                else f"曲师：{core.UNNAMED}     点此填写")
         b = Button(text=text, font_name=FONT, font_size=sp(12),
                    size_hint_y=None, height=dp(32), halign="left",
                    background_color=(0.20, 0.26, 0.38, 1))
@@ -629,11 +629,13 @@ class SongGrabApp(App):
             if self._trial_view is not None:
                 self._trial_view.dismiss()
                 self._trial_view = None
-            self.status_text = f"{core.parse_song_entry(raw)[0]}：曲师 {v or '未命名'}"
+            self.status_text = (
+                f"{core.parse_song_entry(raw)[0]}：曲师 {v or core.UNNAMED}")
             self._save_confirm()
             self._show_trial(raw, dict(tr, artist=v, source="手动" if v else ""))
 
-        PromptView(f"改曲师（留空 = 未命名）\n当前：{cur or '未命名'}", ok).open()
+        PromptView(
+            f"改曲师（留空 = {core.UNNAMED}）\n当前：{cur or core.UNNAMED}", ok).open()
 
     def _show_trial(self, raw: str, tr: dict):
         """§8.5 三档结果框：完全命中 / 待确认（带候选卡）/ 失败原因。"""
