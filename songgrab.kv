@@ -464,6 +464,16 @@
             on_release: app.ask_storage_permission()
 
         Button:
+            text: '忘掉已确认的音源'
+            font_name: app.font_name
+            font_size: sp(12)
+            size_hint_y: None
+            height: dp(40)
+            background_normal: ''
+            background_color: 0.32, 0.20, 0.24, 1
+            on_release: app.forget_confirm()
+
+        Button:
             text: '保存并返回'
             font_name: app.font_name
             font_size: sp(16)

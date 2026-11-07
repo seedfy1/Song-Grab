@@ -344,6 +344,7 @@ class SongGrabApp(App):
             except Exception:
                 pass
         self.ctrl = ctl.Controller()
+        self._load_confirm()     # §8.6：上次确认过的音源/改过的曲师，重启还在
         request_basic_permissions()
         self.cfg = self.ctrl.load_cfg()
         self.out_dir = self.cfg.get("output_dir") or str(pc.default_output_dir())
@@ -553,6 +554,55 @@ class SongGrabApp(App):
 
         threading.Thread(target=_work, daemon=True).start()
 
+    def _load_confirm(self):
+        """把 confirm.json 读进三张表（confirmed / trial_artist / trial_src_artist）。"""
+        rows = core.load_confirm()
+        self.confirmed = {}
+        self.trial_artist = {}
+        self.trial_src_artist = {}
+        for raw, r in rows.items():
+            art = str(r.get("artist") or "")
+            bvid = str(r.get("bvid") or "")
+            if bvid or art:
+                self.confirmed[raw] = {"bvid": bvid, "artist": art,
+                                       "title": str(r.get("title") or "")}
+            if r.get("lock"):
+                self.trial_artist[raw] = art
+            if r.get("src_artist"):
+                self.trial_src_artist[raw] = str(r["src_artist"])
+        if self.confirmed:
+            self.status_text = f"已记住 {len(self.confirmed)} 首上次确认的音源"
+
+    def _save_confirm(self):
+        """三张表合并写回 confirm.json（云端不存，纯本地状态）。"""
+        import time as _t
+        now = _t.time()
+        rows = core.load_confirm()
+        raws = (set(rows) | set(self.confirmed)
+                | set(self.trial_artist) | set(self.trial_src_artist))
+        for raw in raws:
+            rec = dict(rows.get(raw) or {})
+            got = self.confirmed.get(raw) or {}
+            if got:
+                rec.update(bvid=got.get("bvid", ""), artist=got.get("artist", ""),
+                           title=got.get("title", ""))
+            if raw in self.trial_artist:
+                rec["artist"] = self.trial_artist[raw]
+                rec["lock"] = True
+            if raw in self.trial_src_artist:
+                rec["src_artist"] = self.trial_src_artist[raw]
+            rec["t"] = now
+            rows[raw] = rec
+        core.save_confirm(rows)
+
+    def forget_confirm(self):
+        """设置页按钮：清掉 confirm.json，下次重新试搜。"""
+        self.confirmed = {}
+        self.trial_artist = {}
+        self.trial_src_artist = {}
+        core.clear_confirm()
+        self.status_text = "已忘掉记住的音源，下次会重新试搜"
+
     def _artist_row(self, raw: str, tr: dict):
         """曲师行：点一下就能改（冻结文档 §8.6「有作者可改」）。"""
         from kivy.uix.button import Button
@@ -578,6 +628,7 @@ class SongGrabApp(App):
                 self._trial_view.dismiss()
                 self._trial_view = None
             self.status_text = f"{core.parse_song_entry(raw)[0]}：曲师 {v or '未命名'}"
+            self._save_confirm()
             self._show_trial(raw, dict(tr, artist=v, source="手动" if v else ""))
 
         PromptView(f"改曲师（留空 = 未命名）\n当前：{cur or '未命名'}", ok).open()
@@ -651,6 +702,7 @@ class SongGrabApp(App):
             "artist": art,
             "title": cand.get("title", ""),
         }
+        self._save_confirm()
         self.status_text = f"已选定：{cand.get('title', '')[:30]}"
 
     def show_candidates(self, song: str):

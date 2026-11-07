@@ -143,6 +143,29 @@ def test_no_artist_locks_unnamed():
         core.process_song = old_p
 
 
+def test_stale_bvid_falls_back_to_trial():
+    """记忆里的 bvid 失效（稿件被删）→ 不直接失败，回退重新试搜。"""
+    import pathlib as _pl
+    called = {}
+    old_i, old_t, old_a = core.video_info, core.trial_song, core.ARTISTS_FILE
+    core.ARTISTS_FILE = _pl.Path("/tmp/sg-flow/artists.json")
+    core.video_info = lambda bvid: None
+
+    def fake_trial(raw, cfg, say=None):
+        called["trial"] = raw
+        return {"stage": "fail", "reason": "搜索无结果", "bvid": ""}
+
+    core.trial_song = fake_trial
+    try:
+        res = core.process_song("晴天", {"output_dir": "/tmp/sg-flow-none"},
+                                _pl.Path("/tmp/sg-flow-work"), bvid="BVdead")
+        assert called.get("trial") == "晴天", called
+        assert res.status == "fail", res.status
+        assert "搜索无结果" in res.reason, res.reason
+    finally:
+        core.video_info, core.trial_song, core.ARTISTS_FILE = old_i, old_t, old_a
+
+
 if __name__ == "__main__":
     fns = [(n, f) for n, f in sorted(globals().items())
            if n.startswith("test_") and callable(f)]

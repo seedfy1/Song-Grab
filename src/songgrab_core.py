@@ -56,6 +56,8 @@ FFMPEG = _pc.ffmpeg_path()
 ARTISTS_FILE = _pc.artists_file()
 SETTINGS_FILE = _pc.settings_file()
 
+CONFIRM_FILE = _pc.data_dir() / "confirm.json"
+
 SEARCH_API = "https://api.bilibili.com/x/web-interface/wbi/search/type"
 VIEW_API = "https://api.bilibili.com/x/web-interface/view"
 UA = (
@@ -443,6 +445,45 @@ def dir_writable_detail(p: Path) -> tuple[bool, str]:
 
 def dir_writable(p: Path) -> bool:
     return dir_writable_detail(p)[0]
+
+
+def load_confirm() -> dict[str, dict[str, Any]]:
+    """界面确认结果（§8.6 状态落盘）。
+
+    raw 行 -> {bvid, artist, title, lock, src_artist, t}
+    lock=True 表示用户在界面上改过曲师（artist 可能为空 = 主动标「未命名」）。
+    """
+    try:
+        if CONFIRM_FILE.exists():
+            data = json.loads(CONFIRM_FILE.read_text(encoding="utf-8"))
+            if isinstance(data, dict):
+                return {str(k): v for k, v in data.items() if isinstance(v, dict)}
+    except Exception:
+        pass
+    return {}
+
+
+def save_confirm(rows: dict[str, dict[str, Any]], keep: int = 500) -> None:
+    """落盘确认状态，只保留最近 keep 条，避免文件无限长大。"""
+    try:
+        items = list(rows.items())
+        if len(items) > keep:
+            items.sort(key=lambda kv: float(kv[1].get("t") or 0))
+            items = items[-keep:]
+        CONFIRM_FILE.write_text(
+            json.dumps(dict(items), ensure_ascii=False, indent=2), encoding="utf-8"
+        )
+    except Exception:
+        pass
+
+
+def clear_confirm() -> None:
+    """删掉确认记录（用户点「忘掉已确认的音源」）。"""
+    try:
+        if CONFIRM_FILE.exists():
+            CONFIRM_FILE.unlink()
+    except Exception:
+        pass
 
 
 def load_artists() -> dict[str, str]:
@@ -1311,14 +1352,17 @@ def process_song(
         say("pick", f"已确认音源 {bvid}，直接下载")
         card = video_info(bvid)
         if card is None:
-            return SongResult(song, "fail", "取不到已确认音源的详情", bvid=bvid)
-        reason = "已确认音源"
-        if not artist and not no_artist:
-            try:
-                artist = metasrc.lookup(song, "")[0]
-            except Exception:
-                artist = ""
-    else:
+            # 记忆里的音源失效了（稿件被删/私密），别直接失败，重新走一遍试搜
+            say("pick", "已确认的音源取不到了，重新搜索")
+            bvid = ""
+        else:
+            reason = "已确认音源"
+            if not artist and not no_artist:
+                try:
+                    artist = metasrc.lookup(song, "")[0]
+                except Exception:
+                    artist = ""
+    if card is None:
         tr = trial_song(f"{song}+{artist_hint}" if artist_hint else song, cfg, say)
         if not tr["bvid"]:
             return SongResult(song, "fail", tr["reason"] or "搜索无结果")
