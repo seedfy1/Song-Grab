@@ -1278,18 +1278,20 @@ def process_song(
     artist_hint: str = "",
     bvid: str = "",
     artist: str = "",
+    no_artist: bool = False,
 ) -> SongResult:
     """处理单首歌（§8.1：已确认音源就按 bvid 直下，下载阶段不再搜索）。
 
     artist_hint = 用户用 `+` 写的作者
     artist      = 界面确认/改过的作者
     bvid        = 界面已确认的候选
+    no_artist   = 用户主动标「未命名」：不查作者、不写作者，文件名叫「歌名+未命名」
     """
     say = progress or (lambda *a, **k: None)
     out_dir = resolve_output_dir(cfg)
     artists = load_artists()
 
-    artist = (artist or artist_hint or "").strip()
+    artist = "" if no_artist else (artist or artist_hint or "").strip()
 
     # 已有成品：曲师变了就顺手改名，避免补表后留下旧名字
     existing = find_existing(out_dir, song)
@@ -1311,7 +1313,7 @@ def process_song(
         if card is None:
             return SongResult(song, "fail", "取不到已确认音源的详情", bvid=bvid)
         reason = "已确认音源"
-        if not artist:
+        if not artist and not no_artist:
             try:
                 artist = metasrc.lookup(song, "")[0]
             except Exception:
@@ -1322,7 +1324,7 @@ def process_song(
             return SongResult(song, "fail", tr["reason"] or "搜索无结果")
         card = tr["_card"]
         reason = tr["reason"] or "试搜选中"
-        if not artist:
+        if not artist and not no_artist:
             artist = tr.get("artist") or ""
         say("pick", f"选中 {card.play} 播 · {card.title[:30]}")
 
@@ -1332,11 +1334,11 @@ def process_song(
             save_artist(song, artist)
         except Exception:
             pass
-    if not artist:
+    if not artist and not no_artist:
         artist = artists.get(song, "").strip()
 
     pending = False
-    if not artist:
+    if not artist and not no_artist:
         artist = (card.author or "").strip() or "未知"
         pending = True
         say("artist", f"未查到曲师，暂用 UP 主「{artist}」")
@@ -1348,7 +1350,7 @@ def process_song(
         if raw.stat().st_size < 100 * 1024:
             raise RuntimeError("下载文件过小")
 
-        fname = sanitize_filename(f"{song}+{artist}") + ".m4a"
+        fname = sanitize_filename(f"{song}+{artist or '未命名'}") + ".m4a"
         dst = out_dir / fname
         say("convert", "转封装…")
         convert_to_m4a(raw, dst, title=song, artist=artist)

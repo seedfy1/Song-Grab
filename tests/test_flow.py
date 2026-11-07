@@ -72,8 +72,8 @@ def test_confirmed_downloads_by_bvid():
     seen = {}
 
     def fake_process(song, cfg, workdir, progress=None, artist_hint="",
-                     bvid="", artist=""):
-        seen.update(song=song, bvid=bvid, artist=artist)
+                     bvid="", artist="", no_artist=False):
+        seen.update(song=song, bvid=bvid, artist=artist, no_artist=no_artist)
         return core.SongResult(song, "ok", "下完了", "x.m4a", bvid=bvid, artist=artist)
 
     old_p = core.process_song
@@ -88,6 +88,7 @@ def test_confirmed_downloads_by_bvid():
         res = [e for e in evs if e.kind == "result"][0].result
         assert res.status == "ok", res.status
         assert seen["bvid"] == "BV1zzz", seen
+        assert seen["no_artist"] is False, seen
     finally:
         core.process_song = old_p
 
@@ -111,6 +112,35 @@ def test_require_confirm_off_downloads_anyway():
         assert called["n"] == 1
     finally:
         core.trial_song, core.process_song = old_t, old_p
+
+
+def test_no_artist_locks_unnamed():
+    """用户在试搜弹窗里把曲师清空（主动标「未命名」）→ 下载阶段不查也不写作者。
+
+    对应冻结文档 §8.6「有作者可改、无作者标未命名」。
+    """
+    seen = {}
+
+    def fake_process(song, cfg, workdir, progress=None, **k):
+        seen.update(k)
+        return core.SongResult(song, "ok", "下完了", "晴天+未命名.m4a",
+                               bvid=k.get("bvid", ""), artist="")
+
+    old_p = core.process_song
+    core.process_song = fake_process
+    try:
+        c = controller.Controller()
+        cfg = {"output_dir": "/tmp/sg-flow", "require_confirm": True}
+        item = {"raw": "晴天", "song": "晴天", "hint": "", "bvid": "BV1zzz",
+                "artist": "", "no_artist": True}
+        assert c.start([item], cfg)
+        evs = _drain(c)
+        res = [e for e in evs if e.kind == "result"][0].result
+        assert res.status == "ok", res.status
+        assert seen["no_artist"] is True, seen
+        assert seen["artist"] == "", seen
+    finally:
+        core.process_song = old_p
 
 
 if __name__ == "__main__":

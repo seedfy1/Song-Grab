@@ -324,6 +324,11 @@ class SongGrabApp(App):
     confirmed: dict[str, dict] = {}
     # 待确认曲目的候选：歌名 -> [候选 dict]
     pending_cands: dict[str, list] = {}
+    # 用户手动改过的曲师：raw 行 -> 作者名（空字符串 = 主动标「未命名」）
+    trial_artist: dict[str, str] = {}
+    # 试搜时曲库给的曲师：raw 行 -> 作者名（用户没改就用它）
+    trial_src_artist: dict[str, str] = {}
+    _trial_view = None
     # True = 未确认的曲目不自动下载（冻结文档 §8.5「跳过未确定项」）
     require_confirm = BooleanProperty(True)
     _cmd_id: str = ""
@@ -548,8 +553,38 @@ class SongGrabApp(App):
 
         threading.Thread(target=_work, daemon=True).start()
 
+    def _artist_row(self, raw: str, tr: dict):
+        """曲师行：点一下就能改（冻结文档 §8.6「有作者可改」）。"""
+        from kivy.uix.button import Button
+        art = self.trial_artist.get(raw, tr.get("artist", ""))
+        src = tr.get("source", "")
+        if raw in self.trial_artist:
+            src = "手动"
+        text = (f"曲师：{art}（{src}）     改" if art
+                else "曲师：未命名     点此填写")
+        b = Button(text=text, font_name=FONT, font_size=sp(12),
+                   size_hint_y=None, height=dp(32), halign="left",
+                   background_color=(0.20, 0.26, 0.38, 1))
+        b.bind(on_release=lambda *_: self._ask_artist(raw, tr))
+        return b
+
+    def _ask_artist(self, raw: str, tr: dict):
+        cur = self.trial_artist.get(raw, tr.get("artist", ""))
+
+        def ok(v):
+            v = (v or "").strip()
+            self.trial_artist[raw] = v
+            if self._trial_view is not None:
+                self._trial_view.dismiss()
+                self._trial_view = None
+            self.status_text = f"{core.parse_song_entry(raw)[0]}：曲师 {v or '未命名'}"
+            self._show_trial(raw, dict(tr, artist=v, source="手动" if v else ""))
+
+        PromptView(f"改曲师（留空 = 未命名）\n当前：{cur or '未命名'}", ok).open()
+
     def _show_trial(self, raw: str, tr: dict):
         """§8.5 三档结果框：完全命中 / 待确认（带候选卡）/ 失败原因。"""
+        self.trial_src_artist[raw] = tr.get("artist", "")
         from kivy.uix.button import Button
         from kivy.uix.label import Label
         stage = tr.get("stage", "fail")
@@ -567,9 +602,9 @@ class SongGrabApp(App):
             w.bind(width=lambda i, v: setattr(i, "text_size", (v - dp(8), None)))
             return w
 
+        self._trial_view = view
         box.add_widget(lab(head, size=15, h=dp(28)))
-        if tr.get("artist"):
-            box.add_widget(lab(f"曲师：{tr['artist']}（{tr.get('source', '')}）"))
+        box.add_widget(self._artist_row(raw, tr))
         box.add_widget(lab(f"原因：{tr.get('reason', '')}", size=11))
 
         sv = ScrollView()
@@ -607,9 +642,13 @@ class SongGrabApp(App):
 
     def _confirm_source(self, raw: str, cand: dict):
         """记住用户选定的音源，并把该曲目加入「待下载」。"""
+        if raw in self.trial_artist:
+            art = self.trial_artist[raw]
+        else:
+            art = cand.get("artist") or self.trial_src_artist.get(raw, "")
         self.confirmed[raw] = {
             "bvid": cand.get("bvid", ""),
-            "artist": cand.get("artist") or "",
+            "artist": art,
             "title": cand.get("title", ""),
         }
         self.status_text = f"已选定：{cand.get('title', '')[:30]}"
@@ -626,7 +665,8 @@ class SongGrabApp(App):
                 raw = k
                 break
         self._show_trial(raw, {"stage": "confirm", "reason": "点「用这首」设为已确认音源",
-                               "candidates": cands, "artist": ""})
+                               "candidates": cands,
+                               "artist": self.trial_artist.get(raw, "")})
 
     def toggle_require_confirm(self):
         self.require_confirm = not self.require_confirm
@@ -703,9 +743,12 @@ class SongGrabApp(App):
         for raw in self.ctrl.parse_songs(text):
             song, hint = core.parse_song_entry(raw)
             got = self.confirmed.get(raw) or {}
+            # 用户主动标「未命名」（改曲师时留空）→ 下载阶段不查也不写作者
+            lock = raw in self.trial_artist and not self.trial_artist[raw]
             items.append({"raw": raw, "song": song, "hint": hint,
                           "bvid": got.get("bvid", ""),
-                          "artist": got.get("artist", "")})
+                          "artist": got.get("artist", ""),
+                          "no_artist": bool(lock)})
         return items
 
     def start_download(self, text: str):
