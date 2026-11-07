@@ -107,7 +107,9 @@ def check_and_update(code_dir: Path = CODE_DIR) -> tuple[bool, str]:
             local = vf.read_text(encoding="utf-8").strip()
     except Exception:
         pass
-    if rv == local:
+    # 版本号形如 YYYYMMDD-HHMM，字典序即时间序：只接受更新的包，
+    # 避免 CDN 缓存了旧 version.json / 旧 seed.zip 时把本地代码回滚。
+    if rv == local or (local and rv <= local):
         return False, ""
 
     data = _fetch_seed()
