@@ -72,7 +72,7 @@ def test_confirmed_downloads_by_bvid():
     seen = {}
 
     def fake_process(song, cfg, workdir, progress=None, artist_hint="",
-                     bvid="", artist="", no_artist=False):
+                     bvid="", artist="", no_artist=False, **k):
         seen.update(song=song, bvid=bvid, artist=artist, no_artist=no_artist)
         return core.SongResult(song, "ok", "下完了", "x.m4a", bvid=bvid, artist=artist)
 
@@ -175,7 +175,7 @@ def test_filename_is_song_only_and_tag_unknown():
            core.video_info, core.append_catalog, core.load_artists,
            core.save_artist)
 
-    def fake_dl(bvid, workdir, use_cookies=False, progress=None):
+    def fake_dl(bvid, workdir, use_cookies=False, progress=None, **k):
         p = Path(workdir) / "raw.webm"
         Path(workdir).mkdir(parents=True, exist_ok=True)
         p.write_bytes(b"\0" * (120 * 1024))
@@ -269,6 +269,104 @@ def test_trial_want_cover_not_filtered():
         assert tr["bvid"] == "BVwant1", tr
     finally:
         core.search_both, metasrc.lookup = o1, o2
+
+
+def test_video_pages_parses_multi():
+    """多P视频要能解析出每一集的 cid —— 选「下第几集」全靠它。"""
+    fake = {"code": 0, "data": {"bvid": "BVx", "title": "合集", "pages": [
+        {"page": 1, "part": "第一首", "cid": 111, "duration": 200},
+        {"page": 2, "part": "第二首", "cid": 222, "duration": 210},
+    ]}}
+    o = core._http_json
+    core._http_json = lambda url, **k: fake
+    try:
+        pages = core.video_pages("BVx")
+    finally:
+        core._http_json = o
+    assert [p["cid"] for p in pages] == [111, 222], pages
+    assert pages[1]["part"] == "第二首"
+    assert pages[1]["page"] == 2
+
+
+def test_multi_page_download_and_filename():
+    """多P：cid/page 要透传到下载层，文件名要带 P 号（否则各集互相覆盖）。"""
+    seen = {}
+    tips = []
+
+    def fake_dl(bvid, workdir, use_cookies=False, progress=None, cid=0, page=0):
+        seen.update(bvid=bvid, cid=cid, page=page)
+        p = Path(workdir) / "raw.m4a"
+        Path(workdir).mkdir(parents=True, exist_ok=True)
+        p.write_bytes(b"\0" * (120 * 1024))
+        return p
+
+    def fake_conv(src, dst, title="", artist=""):
+        tips.append((dst.name, title, artist))
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        Path(dst).write_bytes(b"\0" * (100 * 1024))
+        return dst
+
+    o = (core.download_audio, core.convert_to_m4a, core.probe_duration,
+         core.video_info, core.append_catalog, core.find_existing,
+         core.load_artists, core.save_artist)
+    core.download_audio = fake_dl
+    core.convert_to_m4a = fake_conv
+    core.probe_duration = lambda p: 200.0
+    core.video_info = lambda bvid: core.Card(bvid, "合集", 1000, 400, "UP")
+    core.append_catalog = lambda *a, **k: None
+    core.find_existing = lambda *a, **k: None
+    core.load_artists = lambda: {}
+    core.save_artist = lambda *a, **k: None
+    try:
+        res = core.process_song("晴天", {}, Path("/tmp/sg-mp"), bvid="BVx",
+                                artist="周杰伦", cid=222, page=2, suffix=" P2")
+    finally:
+        (core.download_audio, core.convert_to_m4a, core.probe_duration,
+         core.video_info, core.append_catalog, core.find_existing,
+         core.load_artists, core.save_artist) = o
+    assert res.status == "ok", res.reason
+    assert res.file == "晴天 P2.m4a", res.file
+    assert seen == {"bvid": "BVx", "cid": 222, "page": 2}, seen
+    assert tips and tips[0][0] == "晴天 P2.m4a", tips
+
+
+def test_ytdlp_fallback_keeps_page():
+    """直链失败回退 yt-dlp 时要带 ?p=N，否则只会下到 P1。"""
+    got = {}
+
+    class FakeYDL:
+        def __init__(self, opts):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def extract_info(self, url, download=False):
+            got["url"] = url
+            return {"id": "BVx", "ext": "m4a"}
+
+    import types
+    fake_mod = types.SimpleNamespace(YoutubeDL=FakeYDL)
+    o_sys = sys.modules.get("yt_dlp")
+    sys.modules["yt_dlp"] = fake_mod
+    o_cf = core._pc.cookies_file
+    core._pc.cookies_file = lambda: None
+    try:
+        Path("/tmp/sg-mp2").mkdir(parents=True, exist_ok=True)
+        try:
+            core._download_ytdlp("BVx", Path("/tmp/sg-mp2"), page=3)
+        except Exception:
+            pass          # 只要 URL 拼对，落盘失败无所谓
+    finally:
+        if o_sys is None:
+            sys.modules.pop("yt_dlp", None)
+        else:
+            sys.modules["yt_dlp"] = o_sys
+        core._pc.cookies_file = o_cf
+    assert got.get("url", "").endswith("?p=3"), got
 
 
 if __name__ == "__main__":

@@ -706,6 +706,35 @@ def video_info(bvid: str) -> Card | None:
         return None
 
 
+def video_pages(bvid: str) -> list[dict[str, Any]]:
+    """取分P列表：[{page, part, cid, duration}]。单P视频也返回一条。
+
+    多P视频的音频直链是按 cid 取的，所以要让用户选「下第几集」，
+    必须先知道每一集的 cid。
+    """
+    try:
+        data = _http_json(f"{VIEW_API}?bvid={urllib.parse.quote(str(bvid))}")
+    except Exception:
+        return []
+    d = data.get("data") or {}
+    pages = d.get("pages") or []
+    if pages:
+        out = []
+        for i, x in enumerate(pages):
+            out.append({
+                "page": int(x.get("page") or i + 1),
+                "part": str(x.get("part") or ""),
+                "cid": int(x.get("cid") or 0),
+                "duration": int(x.get("duration") or 0),
+            })
+        return out
+    cid = int(d.get("cid") or 0)
+    if not cid:
+        return []
+    return [{"page": 1, "part": str(d.get("title") or ""),
+             "cid": cid, "duration": int(d.get("duration") or 0)}]
+
+
 # ---------------------------------------------------------------- 选片
 
 @dataclass
@@ -930,16 +959,22 @@ def _stream_opener():
     return op
 
 
-def dash_audio_urls(bvid: str) -> tuple[list[str], int, str]:
-    """返回 (候选 URL 列表[最快在前], 音频流 id, 说明)。"""
-    info = _http_json(f"{VIEW_API}?bvid={bvid}")
-    if info.get("code") != 0:
-        raise RuntimeError(f"取视频信息失败 code={info.get('code')}")
-    data = info.get("data") or {}
-    cid = data.get("cid") or 0
-    if not cid:
-        pages = data.get("pages") or []
-        cid = pages[0].get("cid", 0) if pages else 0
+def dash_audio_urls(bvid: str, cid: int = 0) -> tuple[list[str], int, str]:
+    """返回 (候选 URL 列表[最快在前], 音频流 id, 说明)。
+
+    cid 传了就直接用（多P视频选的那一集），否则取第一集。
+    """
+    if cid:
+        pass
+    else:
+        info = _http_json(f"{VIEW_API}?bvid={bvid}")
+        if info.get("code") != 0:
+            raise RuntimeError(f"取视频信息失败 code={info.get('code')}")
+        data = info.get("data") or {}
+        cid = data.get("cid") or 0
+        if not cid:
+            pages = data.get("pages") or []
+            cid = pages[0].get("cid", 0) if pages else 0
     if not cid:
         raise RuntimeError("取不到 cid")
 
@@ -1019,10 +1054,10 @@ def _fetch_chunk(url: str, start: int, end: int, tries: int = 3) -> bytes:
     return b""
 
 
-def _download_dash(bvid: str, dst: Path, progress=None) -> Path:
+def _download_dash(bvid: str, dst: Path, progress=None, cid: int = 0) -> Path:
     """多线程 Range 拉 DASH 音频流，返回落盘文件。"""
     say = progress or (lambda *a, **k: None)
-    urls, sid, note = dash_audio_urls(bvid)
+    urls, sid, note = dash_audio_urls(bvid, cid=cid)
     say("dl", f"音频流 {sid}，{note}，测速挑节点…")
     url, total = _pick_fast_url(urls)
     host = url.split("/")[2]
@@ -1062,15 +1097,19 @@ def _download_dash(bvid: str, dst: Path, progress=None) -> Path:
 
 
 def download_audio(bvid: str, workdir: Path, use_cookies: bool = False,
-                   progress=None) -> Path:
-    """只下音频。优先自己走 DASH 直链（挑快节点 + 多线程），失败回退 yt-dlp。"""
+                   progress=None, cid: int = 0, page: int = 0) -> Path:
+    """只下音频。优先自己走 DASH 直链（挑快节点 + 多线程），失败回退 yt-dlp。
+
+    cid  = 多P视频里选中的那一集的 cid（0 = 第一集）
+    page = 第几P，仅用于 yt-dlp 回退时拼 ?p=（DASH 路径用 cid）
+    """
     workdir.mkdir(parents=True, exist_ok=True)
     _load_user_cookies()
     dst = workdir / f"{bvid}.m4a"
     try:
         if dst.exists():
             dst.unlink()
-        _download_dash(bvid, dst, progress=progress)
+        _download_dash(bvid, dst, progress=progress, cid=cid)
         if dst.exists() and dst.stat().st_size > 100 * 1024:
             return dst
     except Exception as e:
@@ -1086,10 +1125,10 @@ def download_audio(bvid: str, workdir: Path, use_cookies: bool = False,
             sys.stderr.write(f"[dash] 回退 yt-dlp：{type(e).__name__}: {e}\n")
         except Exception:
             pass
-    return _download_ytdlp(bvid, workdir)
+    return _download_ytdlp(bvid, workdir, page=page)
 
 
-def _download_ytdlp(bvid: str, workdir: Path) -> Path:
+def _download_ytdlp(bvid: str, workdir: Path, page: int = 0) -> Path:
     import io
     import yt_dlp  # 延迟导入，便于单测不依赖
 
@@ -1120,6 +1159,8 @@ def _download_ytdlp(bvid: str, workdir: Path) -> Path:
         opts["cookiefile"] = str(cf)
 
     url = f"https://www.bilibili.com/video/{bvid}"
+    if page and page > 1:
+        url += f"?p={page}"
     _old_out, _old_err = sys.stdout, sys.stderr
     sys.stdout = io.StringIO()
     sys.stderr = io.StringIO()
@@ -1602,6 +1643,9 @@ def process_song(
     bvid: str = "",
     artist: str = "",
     no_artist: bool = False,
+    cid: int = 0,
+    page: int = 0,
+    suffix: str = "",
 ) -> SongResult:
     """处理单首歌（§8.1：已确认音源就按 bvid 直下，下载阶段不再搜索）。
 
@@ -1609,6 +1653,8 @@ def process_song(
     artist      = 界面确认/改过的作者
     bvid        = 界面已确认的候选
     no_artist   = 用户主动清空曲师：不查作者，标签记 UNNAMED，文件名仍用歌名
+    cid/page    = 多P视频选中的那一集（分P的音频直链按 cid 取）
+    suffix      = 文件名后缀（多P时是 " P2" 之类，避免同名单曲互相覆盖）
 
     命名规则：文件名 = 纯歌名.m4a；作者写进音频标签（title/artist），
     缺失时标签记 UNNAMED（Unknown）。
@@ -1620,7 +1666,7 @@ def process_song(
     artist = "" if no_artist else (artist or artist_hint or "").strip()
 
     # 已有成品直接跳过（文件名只含歌名，与曲师无关）
-    existing = find_existing(out_dir, song)
+    existing = find_existing(out_dir, song + suffix)
     if existing:
         return SongResult(song, "skip", "已存在", existing.name, artist=artist)
 
@@ -1675,11 +1721,12 @@ def process_song(
     try:
         say("download", "下载音频…")
         raw = download_audio(card.bvid, workdir,
-                             use_cookies=bool(cfg.get("use_cookies")), progress=say)
+                             use_cookies=bool(cfg.get("use_cookies")), progress=say,
+                             cid=cid, page=page)
         if raw.stat().st_size < 100 * 1024:
             raise RuntimeError("下载文件过小")
 
-        fname = sanitize_filename(song) + ".m4a"
+        fname = sanitize_filename(song + suffix) + ".m4a"
         dst = out_dir / fname
         say("convert", "转封装…")
         convert_to_m4a(raw, dst, title=song, artist=artist or UNNAMED)
@@ -1703,7 +1750,7 @@ def process_song(
         append_catalog(out_dir, {
             "song": song, "file": fname, "title": song, "artist": artist,
             "bytes": dst.stat().st_size, "dur": round(dur, 2), "bv": card.bvid,
-            "pending_artist": pending,
+            "pending_artist": pending, "page": page,
         })
         if pending:
             reason = f"{reason}；曲师未查到，暂用 UP 主名"

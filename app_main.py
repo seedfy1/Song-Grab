@@ -25,6 +25,9 @@ from kivy.lang import Builder
 from kivy.metrics import dp, sp
 from kivy.properties import BooleanProperty, ListProperty, NumericProperty, StringProperty
 from kivy.uix.boxlayout import BoxLayout
+from kivy.uix.button import Button
+from kivy.uix.label import Label
+from kivy.uix.scrollview import ScrollView
 from kivy.uix.filechooser import FileChooserListView
 from kivy.uix.modalview import ModalView
 from kivy.uix.screenmanager import FadeTransition, Screen
@@ -698,7 +701,6 @@ class SongGrabApp(App):
         """
         self.trial_src_artist[raw] = tr.get("artist", "")
         from kivy.uix.button import Button
-        from kivy.uix.label import Label
         stage = tr.get("stage", "fail")
         head = {"ok": "【完全命中】", "confirm": "【待确认】",
                 "fail": "【没有选中】"}.get(stage, "【待确认】")
@@ -829,7 +831,6 @@ class SongGrabApp(App):
         _th.Thread(target=_work, daemon=True).start()
 
     def _show_diag(self, msg: str):
-        from kivy.uix.label import Label
         from kivy.uix.scrollview import ScrollView
         from kivy.uix.boxlayout import BoxLayout as _BL
         view = ModalView(size_hint=(0.95, 0.7))
@@ -848,7 +849,6 @@ class SongGrabApp(App):
         self.status_text = "诊断完成"
 
     def show_help(self):
-        from kivy.uix.label import Label
         from kivy.uix.scrollview import ScrollView
         from kivy.uix.button import Button
         view = ModalView(size_hint=(0.95, 0.88))
@@ -914,6 +914,12 @@ class SongGrabApp(App):
         self._run_items(items)
 
     def _run_items(self, items: list) -> None:
+        """启动下载；先问多P视频要下哪一集（P1/P2/全部）。"""
+        self._pages_items = list(items)
+        self._pages_ok = []
+        Clock.schedule_once(lambda dt: self._next_pages(), 0)
+
+    def _start_run(self, items: list) -> None:
         main: MainScreen = self.sm.get_screen("main")
         main.clear_rows()
         cfg = dict(self.cfg)
@@ -925,6 +931,130 @@ class SongGrabApp(App):
             self.status_text = f"开始处理 {len(items)} 首"
         else:
             self.status_text = "已有任务在跑"
+
+    # ---------- 多P视频：选下哪一集 ----------
+    def _next_pages(self) -> None:
+        if getattr(self, "_pages_cancel", False):
+            self._pages_cancel = False
+            return
+        todo = getattr(self, "_pages_items", None)
+        if not todo:
+            items = getattr(self, "_pages_ok", None) or []
+            if not items:
+                self.status_text = "没有要下载的曲目"
+                return
+            self._start_run(items)
+            return
+        it = todo.pop(0)
+        bvid = str(it.get("bvid") or "").strip()
+        # 已经指定过分P（cid 有值）或本来就不知道 bvid，直接放行
+        if not bvid or it.get("cid"):
+            self._pages_ok.append(it)
+            Clock.schedule_once(lambda dt: self._next_pages(), 0)
+            return
+
+        def work() -> None:
+            try:
+                pages = core.video_pages(bvid)
+            except Exception:
+                pages = []
+            Clock.schedule_once(lambda dt: self._ask_pages(it, pages), 0)
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def _ask_pages(self, it: dict, pages: list) -> None:
+        """多P弹窗：每集一行「下这集」，底部「全部下载 / 跳过这首」。"""
+        if len(pages) <= 1:
+            self._pages_ok.append(it)
+            self._next_pages()
+            return
+
+        song = str(it.get("song") or it.get("raw") or "")
+        view = ModalView(size_hint=(0.94, 0.9), background_color=(0.07, 0.08, 0.1, 1))
+        box = BoxLayout(orientation="vertical", padding=dp(10), spacing=dp(6))
+        def lab(text, color=(0.86, 0.88, 0.94, 1), size=12, h=None):
+            w = Label(text=text, font_name=FONT, font_size=sp(size), halign="left",
+                      valign="top", color=color, size_hint_y=None, height=h or dp(22))
+            w.bind(width=lambda i, v: setattr(i, "text_size", (v - dp(8), None)))
+            return w
+
+        box.add_widget(lab(f"【这个视频有 {len(pages)} 集】", size=16, h=dp(28),
+                           color=(0.95, 0.78, 0.35, 1)))
+        box.add_widget(lab(song or "（未命名）", size=11, h=dp(22)))
+
+        sv = ScrollView()
+        inner = BoxLayout(orientation="vertical", size_hint_y=None, spacing=dp(4))
+        inner.bind(minimum_height=inner.setter("height"))
+        acted = [False]
+
+        def take(pgs: list) -> None:
+            acted[0] = True
+            view.dismiss()
+            for pg in pgs:
+                n = int(pg.get("page") or 1)
+                new = dict(it)
+                new["cid"] = int(pg.get("cid") or 0)
+                new["page"] = n
+                new["suffix"] = f" P{n}"
+                new["_no_pages"] = True
+                self._pages_ok.append(new)
+            self.status_text = (f"已选 {len(pgs)} 集" if len(pgs) > 1
+                               else f"已选 P{pgs[0].get('page')}")
+            self._next_pages()
+
+        for pg in pages:
+            n = int(pg.get("page") or 1)
+            part = str(pg.get("part") or "").strip()
+            dur = int(pg.get("duration") or 0)
+            row = BoxLayout(size_hint_y=None, height=dp(48), spacing=dp(6))
+            row.add_widget(lab(f"P{n}  {part[:20]}\n{dur}s", size=10, h=dp(46)))
+            row.add_widget(Button(
+                text="下这集", font_name=FONT, font_size=sp(11),
+                size_hint_x=None, width=dp(68),
+                on_release=lambda *_, pg=pg: take([pg])))
+            inner.add_widget(row)
+        sv.add_widget(inner)
+        box.add_widget(sv)
+
+        def take_all(*_a) -> None:
+            view.dismiss()
+            acted[0] = True
+            for pg in pages:
+                n = int(pg.get("page") or 1)
+                new = dict(it)
+                new["cid"] = int(pg.get("cid") or 0)
+                new["page"] = n
+                new["suffix"] = f" P{n}"
+                new["_no_pages"] = True
+                self._pages_ok.append(new)
+            self.status_text = f"已选全部 {len(pages)} 集"
+            self._next_pages()
+
+        def skip_one(*_a) -> None:
+            view.dismiss()
+            acted[0] = True
+            self._next_pages()
+
+        btns = BoxLayout(size_hint_y=None, height=dp(44), spacing=dp(6))
+        btns.add_widget(Button(
+            text="全部下载", font_name=FONT, font_size=sp(12),
+            on_release=take_all))
+        btns.add_widget(Button(
+            text="跳过这首", font_name=FONT, font_size=sp(12),
+            on_release=skip_one))
+        box.add_widget(btns)
+
+        def on_dismiss(*_a) -> None:
+            if self._pages_view is view:
+                self._pages_view = None
+            if not acted[0]:            # 按系统返回键 = 跳过这首
+                acted[0] = True
+                self._next_pages()
+
+        self._pages_view = view
+        view.bind(on_dismiss=on_dismiss)
+        view.add_widget(box)
+        view.open()
 
     # ---------- 逐首确认（require_confirm=True 时走这条） ----------
     def _begin_confirm_flow(self, items: list) -> None:
@@ -1008,6 +1138,14 @@ class SongGrabApp(App):
         self._run_items(items)
 
     def stop_download(self):
+        pv = getattr(self, "_pages_view", None)
+        if pv is not None:
+            self._pages_cancel = True
+            self._pages_items, self._pages_ok = [], []
+            self._pages_view = None
+            pv.dismiss()
+            self.status_text = "已取消分集选择"
+            return
         if getattr(self, "_flow_stop", None) is False:
             self._flow_stop = True
             if self._trial_view is not None:
@@ -1098,7 +1236,6 @@ class SettingsScreen(Screen):
         box.clear_widgets()
         for i, w in enumerate(self.prio):
             row = BoxLayout(size_hint_y=None, height=dp(44), spacing=dp(4))
-            from kivy.uix.label import Label
             from kivy.uix.button import Button
             row.add_widget(Label(text=w, font_name=FONT, halign="left", valign="middle",
                                  text_size=(None, None)))
@@ -1152,7 +1289,6 @@ class PromptView(ModalView):
         super().__init__(size_hint=(0.85, None), height=dp(220), **kw)
         self._on_ok = on_ok
         from kivy.uix.button import Button
-        from kivy.uix.label import Label
         from kivy.uix.textinput import TextInput
         box = BoxLayout(orientation="vertical", padding=dp(12), spacing=dp(8))
         box.add_widget(Label(text=title, font_name=FONT, size_hint_y=None, height=dp(36)))
@@ -1176,7 +1312,6 @@ class QRLoginView(ModalView):
         super().__init__(size_hint=(0.92, None), height=dp(500), auto_dismiss=False, **kw)
         from kivy.uix.button import Button
         from kivy.uix.image import AsyncImage
-        from kivy.uix.label import Label
         self._on_done = on_done
         self._key = ""
         self._ev = None

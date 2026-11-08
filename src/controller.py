@@ -103,6 +103,8 @@ class Controller:
                     return
                 bvid = artist = ""
                 no_artist = False
+                cid = page = 0
+                suffix = ""
                 if isinstance(item, dict):
                     raw = str(item.get("raw") or item.get("song") or "")
                     song = str(item.get("song") or "")
@@ -110,6 +112,9 @@ class Controller:
                     bvid = str(item.get("bvid") or "")
                     artist = str(item.get("artist") or "")
                     no_artist = bool(item.get("no_artist"))
+                    cid = int(item.get("cid") or 0)
+                    page = int(item.get("page") or 0)
+                    suffix = str(item.get("suffix") or "")
                     if not song:
                         song, hint = core.parse_song_entry(raw)
                 else:
@@ -152,7 +157,8 @@ class Controller:
                 try:
                     res = core.process_song(song, cfg, workdir, progress=say,
                                             artist_hint=hint, bvid=bvid,
-                                            artist=artist, no_artist=no_artist)
+                                            artist=artist, no_artist=no_artist,
+                                            cid=cid, page=page, suffix=suffix)
                 except Exception as e:  # 兜底，绝不让线程炸掉
                     self._emit(Event("log", msg=f"{song} 异常：{e}"))
                     fail += 1
