@@ -382,9 +382,9 @@ def _artists_in_title(title: str) -> list[str]:
         out.append(m.group(1).strip())
     cleaned = []
     for a in out:
-        a = re.sub(r"^(4K|8K|HD|高清|修复|完整版|官方|MV|PV|歌词版)", "", a, flags=re.I).strip(" -—_·")
-        if 2 <= len(a) <= 16 and not _NOT_ARTIST_RX.search(a) and not _FAKE_ARTIST.match(a):
-            cleaned.append(a)
+        b = re.sub(r"^(4K|8K|HD|高清|修复|完整版|官方|MV|PV|歌词版)", "", a, flags=re.I).strip(" -—_·")
+        if 2 <= len(b) <= 16 and not _NOT_ARTIST_RX.search(b) and not _FAKE_ARTIST.match(b):
+            cleaned.append(b)
     return cleaned
 
 

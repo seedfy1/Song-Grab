@@ -15,6 +15,7 @@ import os
 import re
 import shutil
 import subprocess
+import threading
 import sys
 import time
 import unicodedata
@@ -907,8 +908,188 @@ class _QuietLogger:
         pass
 
 
-def download_audio(bvid: str, workdir: Path, use_cookies: bool = False) -> Path:
-    """用 yt-dlp 只下音频，返回落盘文件路径。"""
+# ---------------------------------------------------------------- 直链并发下载
+# yt-dlp 只认 playurl 返回的第一个 CDN（baseUrl）。B 站同一个音频会给
+# 三四个备用域名，实测速度差 10 倍（363 KB/s vs 3636 KB/s），碰上
+# mcdn.bilivideo.cn 那种 P2P 节点还会直接 Connection refused。
+# 所以这里自己拿 playurl，按实测挑最快节点，再用多线程 Range 分块拉。
+
+_PROBE_BYTES = 262144        # 每个节点先拉 256KB 测速
+_DL_THREADS = 8
+
+
+def _stream_opener():
+    """给每个下载线程单独的 opener。
+
+    urllib 的 OpenerDirector 不是线程安全的（内部 handler 有共享状态），
+    8 个线程共用一个迟早会互相踩；但 cookie jar 可以共享，它自己带锁。
+    """
+    op = urllib.request.build_opener(
+        urllib.request.HTTPCookieProcessor(_jar()))
+    op.addheaders = [("User-Agent", UA)]
+    return op
+
+
+def dash_audio_urls(bvid: str) -> tuple[list[str], int, str]:
+    """返回 (候选 URL 列表[最快在前], 音频流 id, 说明)。"""
+    info = _http_json(f"{VIEW_API}?bvid={bvid}")
+    if info.get("code") != 0:
+        raise RuntimeError(f"取视频信息失败 code={info.get('code')}")
+    data = info.get("data") or {}
+    cid = data.get("cid") or 0
+    if not cid:
+        pages = data.get("pages") or []
+        cid = pages[0].get("cid", 0) if pages else 0
+    if not cid:
+        raise RuntimeError("取不到 cid")
+
+    q = urllib.parse.urlencode({"bvid": bvid, "cid": str(cid), "fnval": "4048", "fourk": "1"})
+    pu = _http_json(f"https://api.bilibili.com/x/player/playurl?{q}")
+    if pu.get("code") != 0:
+        raise RuntimeError(f"取播放地址失败 code={pu.get('code')}")
+    dash = (pu.get("data") or {}).get("dash") or {}
+    audios = dash.get("audio") or []
+    if not audios:
+        raise RuntimeError("这个视频没有 DASH 音频流")
+    # id 越大音质越好（30250 Hi-Res > 30280 > 30232），同 id 取码率高者
+    audios.sort(key=lambda a: (a.get("id", 0), a.get("bandwidth", 0)), reverse=True)
+    best = audios[0]
+    urls = [u for u in ([best.get("baseUrl") or best.get("base_url") or ""]
+                        + list(best.get("backupUrl") or best.get("backup_url") or []))
+            if u]
+    if not urls:
+        raise RuntimeError("播放地址为空")
+    return urls, int(best.get("id") or 0), f"{len(urls)} 个节点"
+
+
+def _pick_fast_url(urls: list[str]) -> tuple[str, int]:
+    """并发测速挑最快的节点，返回 (url, 文件总字节数)。全挂了才报错。
+
+    串行测速在节点多时要等好几秒，而这几秒正好是用户盯着进度条的时间；
+    并发测则无论几个节点都只花一个来回的时间。
+    """
+    results: dict[str, tuple[float, int]] = {}
+    errs: list[str] = []
+    lock = threading.Lock()
+
+    def probe(u: str) -> None:
+        try:
+            req = urllib.request.Request(u, headers={
+                "User-Agent": UA, "Referer": "https://www.bilibili.com/",
+                "Range": f"bytes=0-{_PROBE_BYTES - 1}",
+            })
+            t0 = time.time()
+            with _stream_opener().open(req, timeout=20) as r:
+                r.read(_PROBE_BYTES)
+                cr = r.headers.get("Content-Range") or ""
+                total = int(cr.rsplit("/", 1)[1]) if "/" in cr else int(
+                    r.headers.get("Content-Length") or 0)
+            kbps = _PROBE_BYTES / 1024.0 / max(time.time() - t0, 0.05)
+            with lock:
+                results[u] = (kbps, total)
+        except Exception as e:
+            with lock:
+                errs.append(f"{u.split('/')[2]}:{type(e).__name__}")
+
+    ths = [threading.Thread(target=probe, args=(u,), daemon=True) for u in urls]
+    for t in ths:
+        t.start()
+    for t in ths:
+        t.join()
+    if not results:
+        raise RuntimeError("所有 CDN 节点都连不上：" + "；".join(errs))
+    best_url = max(results, key=lambda k: results[k][0])
+    total = next((t for _, t in results.values() if t > 0), 0)
+    return best_url, total
+
+
+def _fetch_chunk(url: str, start: int, end: int, tries: int = 3) -> bytes:
+    for i in range(tries):
+        try:
+            req = urllib.request.Request(url, headers={
+                "User-Agent": UA, "Referer": "https://www.bilibili.com/",
+                "Range": f"bytes={start}-{end}",
+            })
+            with _stream_opener().open(req, timeout=30) as r:
+                return r.read()
+        except Exception:
+            if i == tries - 1:
+                raise
+            time.sleep(0.8 * (i + 1))
+    return b""
+
+
+def _download_dash(bvid: str, dst: Path, progress=None) -> Path:
+    """多线程 Range 拉 DASH 音频流，返回落盘文件。"""
+    say = progress or (lambda *a, **k: None)
+    urls, sid, note = dash_audio_urls(bvid)
+    say("dl", f"音频流 {sid}，{note}，测速挑节点…")
+    url, total = _pick_fast_url(urls)
+    host = url.split("/")[2]
+    if total <= 0:
+        raise RuntimeError("拿不到文件大小")
+    say("dl", f"用 {host} 下载 {total / 1048576.0:.1f} MB")
+
+    n = max(1, min(_DL_THREADS, int(total / (512 * 1024)) or 1))
+    step = (total + n - 1) // n
+    parts: list[bytes | None] = [None] * n
+    done = [0]
+    lock = threading.Lock()
+
+    def work(i: int) -> None:
+        s0 = i * step
+        e0 = min(s0 + step - 1, total - 1)
+        parts[i] = _fetch_chunk(url, s0, e0)
+        with lock:
+            done[0] += len(parts[i] or b"")
+            say("dl", f"{done[0] * 100 // total}%")
+
+    ths = [threading.Thread(target=work, args=(i,), daemon=True) for i in range(n)]
+    for t in ths:
+        t.start()
+    for t in ths:
+        t.join()
+    if any(p is None for p in parts):
+        raise RuntimeError("有分块没下完")
+    tmp = dst.with_suffix(".part")
+    tmp.write_bytes(b"".join(p or b"" for p in parts))
+    got = tmp.stat().st_size
+    if got != total:
+        tmp.unlink(missing_ok=True)
+        raise RuntimeError(f"大小对不上：{got} != {total}")
+    tmp.replace(dst)
+    return dst
+
+
+def download_audio(bvid: str, workdir: Path, use_cookies: bool = False,
+                   progress=None) -> Path:
+    """只下音频。优先自己走 DASH 直链（挑快节点 + 多线程），失败回退 yt-dlp。"""
+    workdir.mkdir(parents=True, exist_ok=True)
+    _load_user_cookies()
+    dst = workdir / f"{bvid}.m4a"
+    try:
+        if dst.exists():
+            dst.unlink()
+        _download_dash(bvid, dst, progress=progress)
+        if dst.exists() and dst.stat().st_size > 100 * 1024:
+            return dst
+    except Exception as e:
+        # 直链失败不是致命错误：老视频没有 DASH 流，交给 yt-dlp 兜底。
+        # 但要把半成品清掉，否则 yt-dlp 的"新增文件"判定会把它当成本次产出。
+        for junk in (dst, dst.with_suffix(".part")):
+            try:
+                if junk.exists():
+                    junk.unlink()
+            except Exception:
+                pass
+        try:
+            sys.stderr.write(f"[dash] 回退 yt-dlp：{type(e).__name__}: {e}\n")
+        except Exception:
+            pass
+    return _download_ytdlp(bvid, workdir)
+
+
+def _download_ytdlp(bvid: str, workdir: Path) -> Path:
     import io
     import yt_dlp  # 延迟导入，便于单测不依赖
 
@@ -1014,14 +1195,14 @@ def _mp4_duration_pure(path: Path) -> float:
                         return 0.0
                     count = int.from_bytes(body[off:off + 2], "big")
                     off += 2
-                    total = 0
+                    dur_sum = 0          # 别复用 total（那是文件总长，会上游循环用）
                     # 每个 reference 12 字节：ref_type+size(4) dur(4) sap(4)
                     for _ in range(count):
                         if off + 12 > len(body):
                             break
-                        total += int.from_bytes(body[off + 4:off + 8], "big")
+                        dur_sum += int.from_bytes(body[off + 4:off + 8], "big")
                         off += 12
-                    return float(total) / ts if ts else 0.0
+                    return float(dur_sum) / ts if ts else 0.0
                 if kind == b"moov":
                     end = pos + size
                     p2 = pos + 8
@@ -1493,7 +1674,8 @@ def process_song(
     raw = None
     try:
         say("download", "下载音频…")
-        raw = download_audio(card.bvid, workdir, use_cookies=bool(cfg.get("use_cookies")))
+        raw = download_audio(card.bvid, workdir,
+                             use_cookies=bool(cfg.get("use_cookies")), progress=say)
         if raw.stat().st_size < 100 * 1024:
             raise RuntimeError("下载文件过小")
 

@@ -175,7 +175,7 @@ def test_filename_is_song_only_and_tag_unknown():
            core.video_info, core.append_catalog, core.load_artists,
            core.save_artist)
 
-    def fake_dl(bvid, workdir, use_cookies=False):
+    def fake_dl(bvid, workdir, use_cookies=False, progress=None):
         p = Path(workdir) / "raw.webm"
         Path(workdir).mkdir(parents=True, exist_ok=True)
         p.write_bytes(b"\0" * (120 * 1024))
