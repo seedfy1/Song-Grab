@@ -348,6 +348,7 @@ class SongGrabApp(App):
     out_dir = StringProperty("")
     ffmpeg_hint = StringProperty("")
     cookie_hint = StringProperty("")
+    update_hint = StringProperty("")
     failed_songs: list[str] = []
     # 用户确认过的音源：raw 行 -> {"bvid","artist","title"}
     confirmed: dict[str, dict] = {}
@@ -652,6 +653,36 @@ class SongGrabApp(App):
             rec["t"] = now
             rows[raw] = rec
         core.save_confirm(rows)
+
+    def check_update_now(self):
+        """设置页按钮：立刻检查代码更新（和启动时那次同一套逻辑）。"""
+        if self.update_hint.startswith("正在"):
+            return
+        self.update_hint = "正在检查更新…"
+
+        def work() -> None:
+            ok, note, err = False, "", ""
+            try:
+                ok, note = check_and_update()
+            except Exception as e:
+                err = f"{type(e).__name__}: {e}"
+            Clock.schedule_once(lambda dt: self._update_done(ok, note, err), 0)
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def _update_done(self, ok: bool, note: str, err: str) -> None:
+        local = ""
+        try:
+            local = (CODE_DIR / ".version").read_text(encoding="utf-8").strip()
+        except Exception:
+            pass
+        if err:
+            self.update_hint = f"检查失败：{err}"
+        elif ok:
+            self.update_hint = f"已更新到 {local}，重开 App 生效"
+            self._notify_updated(note)
+        else:
+            self.update_hint = f"已是最新版本（{local or '未知'}）"
 
     def forget_confirm(self):
         """设置页按钮：清掉 confirm.json，下次重新试搜。"""
@@ -1213,6 +1244,13 @@ class SettingsScreen(Screen):
     def on_pre_enter(self):
         app: SongGrabApp = App.get_running_app()  # type: ignore[assignment]
         app.cookie_hint = pc.cookies_hint()
+        tot = ""
+        try:
+            tot = (CODE_DIR / ".version").read_text(encoding="utf-8").strip()
+        except Exception:
+            pass
+        if not app.update_hint.startswith(("正在", "已更新", "检查失败", "已是最新")):
+            app.update_hint = f"当前代码版本 {tot}" if tot else ""
         # 这些必须在主线程做，之前被误放进 _check_ffmpeg 线程里，进设置页就报错
         self.ids.out_input.text = app.out_dir
         self.ids.play_input.text = str(app.cfg.get("min_play", 1))
