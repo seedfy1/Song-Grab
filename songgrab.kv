@@ -228,7 +228,7 @@
                 disabled: app.running
                 on_release: app.start_download(root.ids.song_input.text)
             Button:
-                text: '停止'
+                text: '暂停'
                 font_name: app.font_name
                 font_size: sp(15)
                 size_hint_x: None
@@ -361,6 +361,41 @@
                 background_color: 0.13, 0.14, 0.18, 1
                 foreground_color: 0.92, 0.93, 0.96, 1
 
+        BoxLayout:
+            size_hint_y: None
+            height: dp(42)
+            spacing: dp(6)
+            Label:
+                text: '格式'
+                font_name: app.font_name
+                font_size: sp(12)
+                color: 0.65, 0.67, 0.75, 1
+                size_hint_x: None
+                width: dp(46)
+                halign: 'left'
+                text_size: self.width, None
+            Button:
+                id: fmt_m4a
+                text: 'm4a'
+                font_name: app.font_name
+                font_size: sp(12)
+                background_normal: ''
+                on_release: root.set_fmt('m4a')
+            Button:
+                id: fmt_mp3
+                text: 'mp3'
+                font_name: app.font_name
+                font_size: sp(12)
+                background_normal: ''
+                on_release: root.set_fmt('mp3')
+            Button:
+                id: fmt_mp4
+                text: 'mp4'
+                font_name: app.font_name
+                font_size: sp(12)
+                background_normal: ''
+                on_release: root.set_fmt('mp4')
+
         Label:
             text: '优先级词条（越靠上越优先，支持正则）'
             font_name: app.font_name
@@ -487,6 +522,25 @@
                 background_normal: ''
                 background_color: 0.32, 0.20, 0.24, 1
                 on_release: app.forget_confirm()
+
+        BoxLayout:
+            size_hint_y: None
+            height: dp(40)
+            spacing: dp(6)
+            Button:
+                text: '导出故障统计'
+                font_name: app.font_name
+                font_size: sp(12)
+                background_normal: ''
+                background_color: 0.28, 0.30, 0.36, 1
+                on_release: app.export_metrics()
+            Button:
+                text: '导出待补清单'
+                font_name: app.font_name
+                font_size: sp(12)
+                background_normal: ''
+                background_color: 0.28, 0.30, 0.36, 1
+                on_release: app.export_need_list()
 
         Label:
             text: app.update_hint

@@ -336,7 +336,33 @@ class ResultRow(BoxLayout):
             if app is not None and getattr(self, "style", "") == "confirm":
                 app.show_candidates(self.song)
                 return True
+            # 长按 0.55s 出菜单（手机上替代 Windows 版右键）
+            touch.ud["_lp_xy"] = touch.pos
+            touch.ud["_lp_ev"] = Clock.schedule_once(
+                lambda _dt: self._long_press(touch), 0.55)
         return super().on_touch_down(touch)
+
+    def on_touch_move(self, touch):
+        ev = touch.ud.get("_lp_ev")
+        if ev is not None:
+            x0, y0 = touch.ud.get("_lp_xy", touch.pos)
+            if abs(touch.x - x0) > dp(12) or abs(touch.y - y0) > dp(12):
+                ev.cancel()          # 滑动了 = 用户在滚列表，不是长按
+                touch.ud["_lp_ev"] = None
+        return super().on_touch_move(touch)
+
+    def on_touch_up(self, touch):
+        ev = touch.ud.get("_lp_ev")
+        if ev is not None:
+            ev.cancel()
+            touch.ud["_lp_ev"] = None
+        return super().on_touch_up(touch)
+
+    def _long_press(self, touch):
+        touch.ud["_lp_ev"] = None
+        app = App.get_running_app()
+        if app is not None:
+            app.show_row_menu(self.song)
 
 
 class SongGrabApp(App):
@@ -486,7 +512,7 @@ class SongGrabApp(App):
             self.running = False
             self._notify(f"下载完成：成功{s['ok']} 跳过{s['skip']} 失败{s['fail']}")
         elif ev.kind == "stopped":
-            self.status_text = "已停止"
+            self.status_text = "已暂停，再点「开始下载」会从这一首接着下"
             self.running = False
 
     def _notify(self, msg: str):
@@ -692,6 +718,41 @@ class SongGrabApp(App):
         core.clear_confirm()
         self.status_text = "已忘掉记住的音源，下次会重新试搜"
 
+    def export_metrics(self):
+        """设置页按钮：把最近 30 天的失败统计导成 CSV（Windows 版同款 metrics.csv）。"""
+        try:
+            out = Path(self.out_dir) / "故障统计.csv"
+            n = core.metrics_export_csv(out, days=30)
+        except Exception as e:
+            self.status_text = f"导出失败：{e}"
+            return
+        self.status_text = (f"已导出 {n} 行 → 故障统计.csv" if n
+                            else "最近 30 天没有失败记录")
+
+    def export_need_list(self):
+        """设置页按钮：把本轮没成功的歌导成「待补 +作者」的 TSV 清单。"""
+        rows = []
+        for v in self.results.values():
+            st = v.get("status") or ""
+            stage = ("success" if st == "ok"
+                     else "pending" if st in ("confirm", "preview")
+                     else "failed")
+            rows.append({
+                "song": v.get("song") or "",
+                "stage": stage,
+                "artist": "",
+                "reason": v.get("reason") or "",
+                "bvid": v.get("bvid") or "",
+            })
+        try:
+            out = Path(self.out_dir) / "待补作者清单.tsv"
+            n = core.export_need_author(rows, out)
+        except Exception as e:
+            self.status_text = f"导出失败：{e}"
+            return
+        self.status_text = (f"已导出 {n} 首 → 待补作者清单.tsv" if n
+                            else "本轮没有需要补作者的歌")
+
     def _artist_row(self, raw: str, tr: dict):
         """曲师行：点一下就能改（冻结文档 §8.6「有作者可改」）。"""
         from kivy.uix.button import Button
@@ -827,6 +888,116 @@ class SongGrabApp(App):
         }
         self._save_confirm()
         self.status_text = f"已选定：{cand.get('title', '')[:30]}"
+
+    def _menu_btn(self, mv, text: str, cb, color=(0.22, 0.24, 0.30, 1)):
+        b = Button(text=text, font_name=FONT, font_size=sp(13),
+                   size_hint_y=None, height=dp(44),
+                   background_normal="", background_color=color)
+        b.bind(on_release=lambda *_: cb())
+        return b
+
+    def show_row_menu(self, song: str):
+        """长按结果行：手机上替代 Windows 版右键菜单。"""
+        info = self.results.get(song) or {}
+        bvid = str(info.get("bvid") or "")
+        file = str(info.get("file") or "")
+        mv = ModalView(size_hint=(0.86, None), height=dp(360),
+                       background_color=(0.08, 0.09, 0.12, 0.98))
+        box = BoxLayout(orientation="vertical", padding=dp(14), spacing=dp(8))
+        head = Label(text=str(song), font_name=FONT, font_size=sp(15),
+                     color=(0.90, 0.92, 0.97, 1), size_hint_y=None, height=dp(34),
+                     halign="left", valign="middle", shorten=True)
+        head.bind(size=lambda *_: setattr(head, "text_size", (head.width, None)))
+        box.add_widget(head)
+        if bvid:
+            box.add_widget(self._menu_btn(mv, f"复制 BV 号（{bvid}）",
+                                          lambda: self._copy(bvid)))
+        box.add_widget(self._menu_btn(mv, "复制歌名", lambda: self._copy(song)))
+        box.add_widget(self._menu_btn(mv, "重新试搜这首",
+                                      lambda: (mv.dismiss(), self.retry_song(song))))
+        if file:
+            box.add_widget(self._menu_btn(
+                mv, "改名（磁盘文件一起改）",
+                lambda: (mv.dismiss(), self.rename_download(song, file))))
+        box.add_widget(self._menu_btn(mv, "打开所在目录",
+                                      lambda: (mv.dismiss(), self.open_out_dir())))
+        box.add_widget(self._menu_btn(mv, "关闭", mv.dismiss,
+                                      color=(0.25, 0.27, 0.33, 1)))
+        mv.add_widget(box)
+        mv.open()
+
+    def _copy(self, s: str):
+        Clipboard.copy(s)
+        self.status_text = f"已复制：{s}"
+
+    def retry_song(self, song: str):
+        """清掉这首记住的音源，重新试搜一遍（长按菜单）。"""
+        for raw in list(self.confirmed):
+            if _song_of_raw(raw) == song:
+                del self.confirmed[raw]
+        if self.confirmed:
+            core.save_confirm(self.confirmed)
+        else:
+            core.clear_confirm()
+        self.status_text = f"{song}：重新试搜…"
+
+        def work():
+            raw = song
+            for k in list(self.pending_cands):
+                if _song_of_raw(k) == song:
+                    raw = k
+                    break
+            try:
+                tr = core.trial_song(raw, self.cfg, say=None,
+                                     cancel=lambda: False)
+            except Exception as exc:
+                msg = f"{song} 试搜失败：{exc}"
+                Clock.schedule_once(
+                    lambda dt, _m=msg: setattr(self, "status_text", _m), 0)
+                return
+            # 不接进「逐首确认」流程：这里只是单首重搜，确认后只记住音源
+            Clock.schedule_once(lambda dt: self._show_trial(raw, tr), 0)
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def rename_download(self, song: str, file: str):
+        """改成品文件名：磁盘改名 + 台账跟着改（Windows 版 1.0.7 同款）。"""
+        old = Path(file)
+        if not old.exists():
+            self.status_text = f"文件不在了：{old.name}"
+            return
+
+        def on_ok(text: str):
+            name = (text or "").strip()
+            if not name:
+                return
+            name = core.sanitize_filename(name)
+            if not name.lower().endswith(".m4a"):
+                name += ".m4a"
+            new = old.with_name(name)
+            if new.exists() and new != old:
+                self.status_text = f"已经有同名文件：{name}"
+                return
+            try:
+                old.replace(new)
+                core._rename_in_catalog(Path(self.out_dir), old.name, new.name)
+            except Exception as e:
+                self.status_text = f"改名失败：{e}"
+                return
+            info = self.results.get(song)
+            if isinstance(info, dict):
+                info["file"] = str(new)
+            self.results[song] = info or {"song": song, "file": str(new), "status": "ok"}
+            self.status_text = f"已改名为 {new.name}"
+
+        PromptView(f"改名（不用写后缀）\n现在是：{old.name}", on_ok).open()
+
+    def open_out_dir(self):
+        try:
+            ok, note = pc.open_folder(Path(self.out_dir))
+        except Exception as e:
+            ok, note = False, str(e)
+        self.status_text = note or ("已打开目录" if ok else "打开目录失败")
 
     def show_candidates(self, song: str):
         """点「待确认」行：列出候选让用户点选。"""
@@ -1185,7 +1356,7 @@ class SongGrabApp(App):
             self.status_text = "已停止逐首确认"
             return
         self.ctrl.stop()
-        self.status_text = "正在停止…（当前这首下完就停）"
+        self.status_text = "正在暂停…（停了再点开始，会从这一首接着下）"
 
     def do_open_folder(self):
         ok, msg = self.ctrl.open_folder(Path(self.out_dir))
@@ -1240,6 +1411,7 @@ class MainScreen(Screen):
 
 class SettingsScreen(Screen):
     prio = ListProperty([])
+    fmt = StringProperty("m4a")
 
     def on_pre_enter(self):
         app: SongGrabApp = App.get_running_app()  # type: ignore[assignment]
@@ -1256,6 +1428,8 @@ class SettingsScreen(Screen):
         self.ids.play_input.text = str(app.cfg.get("min_play", 1))
         self.prio = list(app.cfg.get("priority_words") or [])
         self.refresh_prio()
+        self.fmt = str(app.cfg.get("output_format") or "m4a").lower()
+        self.refresh_fmt()
         if not app.ffmpeg_hint:
             app.ffmpeg_hint = "检测中…"
             threading.Thread(target=self._check_ffmpeg, daemon=True).start()
@@ -1268,6 +1442,20 @@ class SettingsScreen(Screen):
         except Exception as e:
             text = f"ffmpeg 检测失败：{e}"
         Clock.schedule_once(lambda dt: setattr(app, "ffmpeg_hint", text), 0)
+
+    def set_fmt(self, v: str):
+        self.fmt = "mp4" if v == "mp4" else ("mp3" if v == "mp3" else "m4a")
+        self.refresh_fmt()
+
+    def refresh_fmt(self):
+        """当前格式高亮，其余压暗 —— 三个按钮共用一套样式，靠颜色区分。"""
+        for key in ("m4a", "mp3", "mp4"):
+            btn = self.ids.get(f"fmt_{key}")
+            if btn is None:
+                continue
+            btn.background_color = (
+                (0.20, 0.55, 0.75, 1) if key == self.fmt else (0.25, 0.27, 0.33, 1)
+            )
 
     def refresh_prio(self):
         box = self.ids.prio_box
@@ -1315,6 +1503,7 @@ class SettingsScreen(Screen):
             pass
         app.cfg["output_dir"] = app.out_dir
         app.cfg["priority_words"] = list(self.prio)
+        app.cfg["output_format"] = self.fmt
         app.cfg["use_cookies"] = False
         app.ctrl.save_cfg(app.cfg)
         app.status_text = "设置已保存"
