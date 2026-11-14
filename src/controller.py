@@ -105,8 +105,24 @@ class Controller:
         def stats() -> dict[str, int]:
             return {"ok": ok, "skip": skip, "fail": fail, "confirm": confirm}
 
+        # 续传点：上次停在第几首（raw 行完全对上才认，避免换歌单错位）
+        raws = [str(it.get("raw") or it.get("song") or "") if isinstance(it, dict)
+                else str(it) for it in songs]
+        start = 0
+        try:
+            rs = core.load_resume()
+        except Exception:
+            rs = None
+        if rs and list(rs.get("songs") or []) == raws:
+            idx = int(rs.get("index") or 0)
+            if 0 < idx < total:
+                start = idx
+                self._emit(Event("log", msg=f"从第 {idx + 1} 首接着下（上次停在这里）"))
+
         try:
             for i, item in enumerate(songs, 1):
+                if i - 1 < start:
+                    continue
                 if self.stop_flag.is_set():
                     self._emit(Event("stopped", stats=stats()))
                     return
@@ -166,6 +182,7 @@ class Controller:
                             candidates=list(tr.get("candidates") or []))
                         self._emit(Event("result", song=name, result=res,
                                          index=i, total=total))
+                        core.save_resume(raws, i, output_dir=str(out_dir))
                         continue
 
                 try:
@@ -178,6 +195,7 @@ class Controller:
                 except Exception as e:  # 兜底，绝不让线程炸掉
                     self._emit(Event("log", msg=f"{name} 异常：{e}"))
                     fail += 1
+                    core.save_resume(raws, i, output_dir=str(out_dir))
                     continue
 
                 if res.status == "ok":
@@ -190,7 +208,9 @@ class Controller:
                 else:
                     fail += 1
                 self._emit(Event("result", song=name, result=res, index=i, total=total))
+                core.save_resume(raws, i, output_dir=str(out_dir))
 
+            core.clear_resume()
             self._emit(Event("done", stats=stats(), msg=str(out_dir)))
         except Exception as e:
             self._emit(Event("log", msg=f"任务异常终止：{e}"))

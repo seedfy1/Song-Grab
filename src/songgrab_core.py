@@ -154,7 +154,7 @@ def _cfg_value_ok(key: str, value: Any) -> bool:
         return isinstance(value, int) and not isinstance(value, bool)
     if isinstance(default, str):
         if key == "output_format":
-            return value in ("m4a", "mp3")
+            return value in ("m4a", "mp3", "mp4")
         return isinstance(value, str)
     if isinstance(default, list):
         return isinstance(value, list) and all(isinstance(x, str) for x in value)
