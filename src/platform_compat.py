@@ -77,13 +77,23 @@ def ca_bundle() -> Path | None:
                 return c
         except Exception:
             continue
-    # 热更/私有目录里的 assets（p4a 会把 assets 一起解到 APP_PRIVATE 下），
-    # 按后缀找，免得写死文件名
-    for base in (PROJ_ROOT / "assets", data_dir() / "assets"):
+    # 热更/私有目录里的 assets（p4a 会把 private.tar 解到 APP_PRIVATE 下，
+    # 具体是 files/ 还是 files/app/ 各版本不同），浅递归找一遍，免得写死路径
+    for root in (PROJ_ROOT, data_dir()):
         try:
-            for f in sorted(base.glob("*.pem")):
-                if f.is_file() and f.stat().st_size > 10_000:
-                    return f
+            for dirpath, dirnames, filenames in os.walk(root):
+                depth = dirpath[len(str(root)):].count(os.sep)
+                if depth >= 3:
+                    dirnames[:] = []
+                for fn in filenames:
+                    if not fn.endswith(".pem"):
+                        continue
+                    f = Path(dirpath) / fn
+                    try:
+                        if f.is_file() and f.stat().st_size > 10_000:
+                            return f
+                    except Exception:
+                        continue
         except Exception:
             continue
     if IS_ANDROID:

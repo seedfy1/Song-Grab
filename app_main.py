@@ -1587,11 +1587,11 @@ class QRLoginView(ModalView):
         self._ev = Clock.schedule_interval(lambda dt: self._poll(), 2.0)
 
     def _qr_worker(self, url: str):
-        """二维码图片自己下（core 带内置 CA），UI 只读本地文件。"""
+        """二维码在本机生成（纯标准库），不依赖任何在线图片服务。"""
         try:
-            png = core.fetch_qr_png(url)
+            png = core.qr_png(url, side=420)
             if not png.startswith(b"\x89PNG"):
-                raise RuntimeError("返回的不是 PNG")
+                raise RuntimeError("二维码编码失败")
             path = pc.data_dir() / f"qr-{int(time.time())}.png"
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_bytes(png)

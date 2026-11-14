@@ -905,22 +905,57 @@ def qr_login_start() -> tuple[str, str]:
     return url, key
 
 
-def fetch_qr_png(url: str, timeout: float = 15.0) -> bytes:
-    """L52（手机端）：二维码图片由我们自己下载，交给 UI 存成本地文件。
+def _png_chunk(tag: bytes, data: bytes) -> bytes:
+    import struct
+    import zlib
+    body = tag + data
+    return (struct.pack(">I", len(data)) + body
+            + struct.pack(">I", zlib.crc32(body) & 0xFFFFFFFF))
 
-    原来 UI 直接把 https 链接塞给 Kivy 的 Image，走的是 Kivy 自己的网络栈：
-    Android 没有系统 CA，那边一抛 CERTIFICATE_VERIFY_FAILED，二维码就是白的。
-    这里用已经配好内置 cacert.pem 的 _OPENER 取字节，UI 只读本地文件。
+
+def qr_png(data: str, side: int = 420, quiet: int = 2) -> bytes:
+    """把文本编成二维码 PNG，纯标准库（内置 qrcode 子集 + zlib）。
+
+    以前是让 Kivy 去 api.qrserver.com 拉图，Android 上既缺 CA、第三方服务
+    还时不时回 gzip 或错误页；本机生成就彻底没有网络这回事。
     """
-    req = urllib.request.Request(url, headers={
-        "User-Agent": UA,
-        "Accept": "image/*,*/*;q=0.8",
-    })
-    with _OPENER.open(req, timeout=timeout) as r:
-        data = r.read()
-    if not data:
-        raise RuntimeError("二维码图片是空的")
-    return data
+    import struct
+    import zlib
+    from qrgen import QRCode
+
+    qr = QRCode(border=quiet, error_correction=1)  # 1 = 纠错级 M
+    qr.add_data(data)
+    qr.make(fit=True)
+    mat = qr.get_matrix()
+    n = len(mat)
+    scale = max(1, side // n)
+    width = n * scale
+
+    raw = bytearray()
+    for row in mat:
+        # 1bit 灰度：0 = 黑（模块在），1 = 白
+        bits = bytearray()
+        cur = 0
+        cnt = 0
+        for val in row:
+            for _ in range(scale):
+                cur = (cur << 1) | (0 if val else 1)
+                cnt += 1
+                if cnt == 8:
+                    bits.append(cur)
+                    cur = 0
+                    cnt = 0
+        if cnt:
+            bits.append(cur << (8 - cnt))
+        line = bytes(bits)
+        for _ in range(scale):
+            raw += b"\x00" + line
+
+    ihdr = struct.pack(">IIBBBBB", width, width, 1, 0, 0, 0, 0)
+    return (b"\x89PNG\r\n\x1a\n"
+            + _png_chunk(b"IHDR", ihdr)
+            + _png_chunk(b"IDAT", zlib.compress(bytes(raw), 9))
+            + _png_chunk(b"IEND", b""))
 
 
 def qr_login_poll(qrcode_key: str) -> tuple[int, str, dict[str, str]]:
@@ -986,14 +1021,26 @@ _COOKIE_JAR = http.cookiejar.CookieJar()
 
 
 def _ssl_context():
-    """按 _init_ssl 定好的 cafile 建上下；拿不到 CA 就返回 None（走系统默认）。"""
+    """按 _init_ssl 定好的 cafile 建上下文。
+
+    兜底很关键：一份 CA 都找不到时不能返回 None —— 那会让 urllib 走系统默认
+    上下文，而 Android 没有系统 CA，整机联网会全部 CERTIFICATE_VERIFY_FAILED
+    （搜索、下载、扫码一起挂）。这里退成「不校验」，宁可降级也要能用。
+    """
     try:
         ca = os.environ.get("SSL_CERT_FILE") or ""
         if ca and os.path.exists(ca):
             return ssl.create_default_context(cafile=ca)
     except Exception:
         pass
-    return None
+    try:
+        _log_swallowed("ssl", RuntimeError("没有可用的 CA 文件，本进程不校验证书"))
+    except Exception:
+        pass
+    try:
+        return ssl._create_unverified_context()  # noqa: SLF001
+    except Exception:
+        return None
 
 
 _SSL_CTX = _ssl_context()
