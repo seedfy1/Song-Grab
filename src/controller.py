@@ -3,7 +3,9 @@
 设计要点：
 - 下载跑在后台线程，事件通过 queue 交给 UI 主循环消费；
 - 停止用 threading.Event，process_song 之间 + 下载前后都能中断；
-- 所有平台差异都走 platform_compat。
+- 所有平台差异都走 platform_compat；
+- 选片/作者/命名全部交给 core（Windows 版同一套 describe_song），
+  这里只负责「多P 拆条」「确认态」「事件转发」。
 """
 from __future__ import annotations
 
@@ -71,11 +73,14 @@ class Controller:
 
     # ------------------------------------------------------------ 主流程
     def start(self, songs: list[Any], cfg: dict[str, Any]) -> bool:
-        """songs 里每项可以是字符串，也可以是已确认音源的 dict：
+        """songs 每项可以是字符串，也可以是已确认音源的 dict：
 
         {"raw": "歌名+作者", "song": "歌名", "hint": "作者",
-         "artist": "确认后的作者", "bvid": "BVxxx"}
-        带 bvid 的直接下载，不再搜索（冻结文档 §8.1）。
+         "artist": "确认后的作者", "bvid": "BVxxx",
+         "page": 2, "no_artist": True}
+
+        带 bvid 的直接下载，不再搜索（冻结文档 §8.1）；
+        page > 1 时文件名带「P{n}」，直链带 ?p={n}（多P 各集互不覆盖）。
         """
         with self._lock:
             if self.running():
@@ -90,37 +95,39 @@ class Controller:
     def _emit(self, ev: Event) -> None:
         self.events.put(ev)
 
-    def _run(self, songs: list[str], cfg: dict[str, Any]) -> None:
+    def _run(self, songs: list[Any], cfg: dict[str, Any]) -> None:
         total = len(songs)
         ok = skip = fail = confirm = 0
+        out_dir = core.resolve_output_dir(cfg)
+        workdir = self.workdir()
+        cancel = self.stop_flag.is_set
+
+        def stats() -> dict[str, int]:
+            return {"ok": ok, "skip": skip, "fail": fail, "confirm": confirm}
+
         try:
-            out_dir = core.resolve_output_dir(cfg)
-            workdir = self.workdir()
             for i, item in enumerate(songs, 1):
                 if self.stop_flag.is_set():
-                    self._emit(Event("stopped", stats={
-                        "ok": ok, "skip": skip, "fail": fail, "confirm": confirm}))
+                    self._emit(Event("stopped", stats=stats()))
                     return
                 bvid = artist = ""
                 no_artist = False
-                cid = page = 0
-                suffix = ""
+                page = 0
                 if isinstance(item, dict):
                     raw = str(item.get("raw") or item.get("song") or "")
                     song = str(item.get("song") or "")
                     hint = str(item.get("hint") or "")
-                    bvid = str(item.get("bvid") or "")
-                    artist = str(item.get("artist") or "")
+                    bvid = str(item.get("bvid") or "").strip()
+                    artist = str(item.get("artist") or "").strip()
                     no_artist = bool(item.get("no_artist"))
-                    cid = int(item.get("cid") or 0)
                     page = int(item.get("page") or 0)
-                    suffix = str(item.get("suffix") or "")
-                    if not song:
-                        song, hint = core.parse_song_entry(raw)
                 else:
                     raw = str(item)
                     song, hint = core.parse_song_entry(raw)
-                if not song and bvid:             # 粘链接进来的：这里在后台线程，取标题洗歌名
+                if not song:
+                    song, hint = core.parse_song_entry(raw)
+                if not song and bvid:
+                    # 粘链接进来的：后台线程取标题洗歌名（不在 UI 线程联网）
                     try:
                         info = core.video_info(bvid)
                     except Exception:
@@ -128,39 +135,48 @@ class Controller:
                     song = (core.clean_video_title(info.title) if info else "") or bvid
                 if not song:
                     continue
-                self._emit(Event("start", song=song, index=i, total=total))
 
-                def say(kind: str, msg: str, _song=song) -> None:
+                # 多P：文件名带 P 号（歌名 P2.m4a），避免各集互相覆盖
+                name = f"{song} P{page}" if page > 1 else song
+                line = f"{name}+{artist}" if artist else name
+                bv = f"{bvid}?p={page}" if (bvid and page > 1) else bvid
+
+                self._emit(Event("start", song=name, index=i, total=total))
+
+                def say(kind: str, msg: str, _song=name) -> None:
                     self._emit(Event("progress", song=_song, msg=str(msg)))
 
                 # §8.1：没确认音源就先试搜，未确认的不下载，交给用户点选
-                if not bvid and cfg.get("require_confirm", True):
+                if not bv and cfg.get("require_confirm", True):
                     try:
-                        tr = core.trial_song(
-                            f"{song}+{hint}" if hint else song, cfg, say)
+                        tr = core.trial_song(line, cfg, say, cancel=cancel)
+                    except core.Cancelled:
+                        self._emit(Event("stopped", stats=stats()))
+                        return
                     except Exception as e:
-                        tr = {"stage": "fail", "reason": f"试搜失败：{e}"}
-                    if tr.get("stage") == "ok":
-                        bvid = tr.get("bvid") or ""
+                        tr = {"stage": "failed", "reason": f"试搜失败：{e}"}
+                    if tr.get("stage") == "success":
+                        bv = tr.get("bvid") or ""
                         artist = artist or tr.get("artist") or ""
                     else:
                         confirm += 1
                         res = core.SongResult(
-                            song, "confirm", tr.get("reason") or "待确认",
+                            name, "confirm", tr.get("reason") or "待确认",
                             bvid=tr.get("bvid") or "", artist=tr.get("artist") or "",
-                            title=tr.get("title") or "",
                             candidates=list(tr.get("candidates") or []))
-                        self._emit(Event("result", song=song, result=res,
+                        self._emit(Event("result", song=name, result=res,
                                          index=i, total=total))
                         continue
 
                 try:
-                    res = core.process_song(song, cfg, workdir, progress=say,
-                                            artist_hint=hint, bvid=bvid,
-                                            artist=artist, no_artist=no_artist,
-                                            cid=cid, page=page, suffix=suffix)
+                    res = core.process_song(
+                        line, cfg, workdir, progress=say, cancel=cancel,
+                        bvid_override=bv or None, no_artist=no_artist)
+                except core.Cancelled:
+                    self._emit(Event("stopped", stats=stats()))
+                    return
                 except Exception as e:  # 兜底，绝不让线程炸掉
-                    self._emit(Event("log", msg=f"{song} 异常：{e}"))
+                    self._emit(Event("log", msg=f"{name} 异常：{e}"))
                     fail += 1
                     continue
 
@@ -168,33 +184,33 @@ class Controller:
                     ok += 1
                 elif res.status == "skip":
                     skip += 1
+                elif res.status == "stopped":
+                    self._emit(Event("stopped", stats=stats()))
+                    return
                 else:
                     fail += 1
-                self._emit(Event("result", song=song, result=res, index=i, total=total))
+                self._emit(Event("result", song=name, result=res, index=i, total=total))
 
-            self._emit(Event("done", stats={
-                "ok": ok, "skip": skip, "fail": fail, "confirm": confirm},
-                msg=str(out_dir)))
+            self._emit(Event("done", stats=stats(), msg=str(out_dir)))
         except Exception as e:
             self._emit(Event("log", msg=f"任务异常终止：{e}"))
-            self._emit(Event("stopped", stats={
-                "ok": ok, "skip": skip, "fail": fail, "confirm": confirm}))
+            self._emit(Event("stopped", stats=stats()))
 
     # ------------------------------------------------------------ 单曲快速检查
-    def trial(self, raw: str, cfg: dict[str, Any]) -> dict[str, Any]:
+    def trial(self, raw: str, cfg: dict[str, Any], bvid: str = "") -> dict[str, Any]:
         """同步跑 §8 试搜链，返回 trial_song 的 dict（三档 + 候选）。"""
-        return core.trial_song(raw, cfg)
+        return core.trial_song(raw, cfg, bvid_override=bvid or None)
 
     def probe(self, raw: str, cfg: dict[str, Any]) -> str:
         """一行说明（兼容旧调用）：把 trial 结果压成文字。"""
         tr = self.trial(raw, cfg)
-        if tr["stage"] == "fail":
-            return f"未选中：{tr['reason']}"
-        c = tr["candidates"][0] if tr["candidates"] else {}
-        head = "已命中" if tr["stage"] == "ok" else "待确认"
+        if tr.get("stage") == "failed":
+            return f"未选中：{tr.get('reason') or ''}"
+        c = (tr.get("candidates") or [{}])[0]
+        head = "已命中" if tr.get("stage") == "success" else "待确认"
         return (f"{head}：{str(c.get('title', ''))[:40]} · "
                 f"{c.get('play', 0)} 播 · {c.get('duration', 0)}s"
-                f"（{tr['reason']}）")
+                f"（{tr.get('reason') or ''}）")
 
 
 def consume(ctrl: Controller, handler: Callable[[Event], None], interval: float = 0.1) -> None:
