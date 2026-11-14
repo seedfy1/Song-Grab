@@ -60,8 +60,12 @@ def default_output_dir() -> Path:
 
 
 def ca_bundle() -> Path | None:
-    """CA 证书包。Android 上没有系统证书路径，必须自带一份。"""
-    cands = [PROJ_ROOT / "assets" / "cacert.pem"]
+    """CA 证书包。Android 上没有系统证书路径，必须自带一份。
+
+    L52：热更目录（/sdcard/Music/SongGrab/code）里没有 APK 的 assets，
+    所以再加一条「从 APK 资产解到私有目录」的路子 —— 解一次就缓存着用。
+    """
+    cands = [PROJ_ROOT / "assets" / "ca_bundle_file", data_dir() / "ca_bundle_file"]
     try:
         import certifi  # type: ignore
         cands.append(Path(certifi.where()))
@@ -73,6 +77,23 @@ def ca_bundle() -> Path | None:
                 return c
         except Exception:
             continue
+    # 热更/私有目录里的 assets（p4a 会把 assets 一起解到 APP_PRIVATE 下），
+    # 按后缀找，免得写死文件名
+    for base in (PROJ_ROOT / "assets", data_dir() / "assets"):
+        try:
+            for f in sorted(base.glob("*.pem")):
+                if f.is_file() and f.stat().st_size > 10_000:
+                    return f
+        except Exception:
+            continue
+    if IS_ANDROID:
+        dest = data_dir() / "ca_bundle_file"
+        for name in ("cacert.pem", "assets/cacert.pem"):
+            try:
+                if _extract_asset(name, dest) and dest.stat().st_size > 10_000:
+                    return dest
+            except Exception:
+                continue
     return None
 
 

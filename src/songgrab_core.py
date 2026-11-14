@@ -12,6 +12,7 @@ import hashlib
 import json
 import os
 import re
+import ssl
 import time
 import subprocess
 import sys
@@ -42,14 +43,30 @@ def app_dir() -> Path:
 
 # 让 HTTPS 校验在打包环境里也能找到 CA 证书
 def _init_ssl() -> None:
+    """让 HTTPS 校验找得到 CA。
+
+    L52（手机端）：Android 上没有系统证书目录，certifi 也不在包里，
+    所以必须优先用随包带的 assets/cacert.pem（platform_compat.ca_bundle）；
+    找不到才退回 certifi。原来只认 certifi，导致真机上一切 HTTPS
+    （扫码二维码图片、B 站接口）都报 CERTIFICATE_VERIFY_FAILED。
+    """
+    ca = ""
     try:
-        import certifi
-        ca = certifi.where()
-        if os.path.exists(ca):
-            os.environ.setdefault("SSL_CERT_FILE", ca)
-            os.environ.setdefault("REQUESTS_CA_BUNDLE", ca)
+        got = _pc.ca_bundle()
+        if got:
+            ca = str(got)
     except Exception:
-        pass
+        ca = ""
+    if not ca or not os.path.exists(ca):
+        try:
+            import certifi  # type: ignore
+            ca = certifi.where()
+        except Exception:
+            ca = ""
+    if ca and os.path.exists(ca):
+        # 覆盖写：Kivy 或别的库可能先塞了错的值，setdefault 会留坑
+        os.environ["SSL_CERT_FILE"] = ca
+        os.environ["REQUESTS_CA_BUNDLE"] = ca
 
 
 _init_ssl()
@@ -888,6 +905,24 @@ def qr_login_start() -> tuple[str, str]:
     return url, key
 
 
+def fetch_qr_png(url: str, timeout: float = 15.0) -> bytes:
+    """L52（手机端）：二维码图片由我们自己下载，交给 UI 存成本地文件。
+
+    原来 UI 直接把 https 链接塞给 Kivy 的 Image，走的是 Kivy 自己的网络栈：
+    Android 没有系统 CA，那边一抛 CERTIFICATE_VERIFY_FAILED，二维码就是白的。
+    这里用已经配好内置 cacert.pem 的 _OPENER 取字节，UI 只读本地文件。
+    """
+    req = urllib.request.Request(url, headers={
+        "User-Agent": UA,
+        "Accept": "image/*,*/*;q=0.8",
+    })
+    with _OPENER.open(req, timeout=timeout) as r:
+        data = r.read()
+    if not data:
+        raise RuntimeError("二维码图片是空的")
+    return data
+
+
 def qr_login_poll(qrcode_key: str) -> tuple[int, str, dict[str, str]]:
     """L30：查询扫码状态，返回 (状态码, 提示, cookies)。
 
@@ -905,8 +940,10 @@ def qr_login_poll(qrcode_key: str) -> tuple[int, str, dict[str, str]]:
         # （_http_json/_warm_up/_expand_short）读写，UI 线程与工作线程并发遍历会
         # 让 jar 抛 "dictionary changed size during iteration"。扫码轮询不需要
         # 登录态，用一次性独立 opener 彻底隔离。
-        opener = urllib.request.build_opener(
-            urllib.request.HTTPCookieProcessor(http.cookiejar.CookieJar()))
+        _hs = [urllib.request.HTTPCookieProcessor(http.cookiejar.CookieJar())]
+        if _SSL_CTX is not None:
+            _hs.append(urllib.request.HTTPSHandler(context=_SSL_CTX))
+        opener = urllib.request.build_opener(*_hs)
         with opener.open(req, timeout=10) as r:
             raw = r.read().decode("utf-8", "ignore")
             set_cookies = r.headers.get_all("Set-Cookie") or []
@@ -946,7 +983,26 @@ def qr_login_poll(qrcode_key: str) -> tuple[int, str, dict[str, str]]:
 
 
 _COOKIE_JAR = http.cookiejar.CookieJar()
-_OPENER = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(_COOKIE_JAR))
+
+
+def _ssl_context():
+    """按 _init_ssl 定好的 cafile 建上下；拿不到 CA 就返回 None（走系统默认）。"""
+    try:
+        ca = os.environ.get("SSL_CERT_FILE") or ""
+        if ca and os.path.exists(ca):
+            return ssl.create_default_context(cafile=ca)
+    except Exception:
+        pass
+    return None
+
+
+_SSL_CTX = _ssl_context()
+_OPENER = urllib.request.build_opener(
+    urllib.request.HTTPCookieProcessor(_COOKIE_JAR),
+    urllib.request.HTTPSHandler(context=_SSL_CTX) if _SSL_CTX is not None
+    else urllib.request.HTTPSHandler(),
+    urllib.request.HTTPRedirectHandler(),
+)
 _WARMED = False
 _MIN_INTERVAL = 1.2
 _SEARCH_CACHE: dict[tuple, tuple[float, list]] = {}
@@ -968,12 +1024,12 @@ def _cache_put(cache: dict, key: Any, value: Any, limit: int) -> None:
         for k in list(cache)[: len(cache) - limit]:
             cache.pop(k, None)
 
-# ---- L23 搜索并发：默认 4 路，被限流自动降 2 路、再降 1 路；连续成功且冷却到点后回升 ----
+# ---- L52 搜索并发：默认 2 路（用户要求全链路 2 路并行，降低风控概率），被限流自动降 1 路 ----
 # 每条「路」仍保持 _MIN_INTERVAL 的间隔，只是允许 N 条路同时各发各的。
-_LANE_LEVELS = (4, 2, 1)
-_LANES = 4
+_LANE_LEVELS = (2, 1)
+_LANES = 2
 _LANE_COND = threading.Condition(threading.Lock())
-_LANE_NEXT: list[float] = [0.0, 0.0, 0.0, 0.0]
+_LANE_NEXT: list[float] = [0.0] * len(_LANE_LEVELS)
 _RISK_STREAK = 0
 _OK_STREAK = 0
 _LAST_RISK_TS = 0.0
@@ -1012,12 +1068,12 @@ def _log_swallowed(where: str, exc: BaseException | None = None) -> None:
 
 
 def search_concurrency() -> int:
-    """当前实际并发路数（1/2/4），GUI 或测试可读。"""
+    """当前实际并发路数（1/2），GUI 或测试可读。"""
     return _LANES
 
 
 def _reset_search_concurrency() -> None:
-    """测试用：恢复默认 4 路并清空统计。"""
+    """测试用：恢复默认 2 路并清空统计。"""
     global _LANES, _RISK_STREAK, _OK_STREAK, _LAST_RISK_TS, _LAST_DOWN_TS
     with _LANE_COND:
         _LANES = _LANE_LEVELS[0]
@@ -1025,7 +1081,7 @@ def _reset_search_concurrency() -> None:
         _OK_STREAK = 0
         _LAST_RISK_TS = 0.0
         _LAST_DOWN_TS = 0.0
-        _LANE_NEXT[:] = [0.0, 0.0, 0.0, 0.0]
+        _LANE_NEXT[:] = [0.0] * len(_LANE_LEVELS)
         _LANE_COND.notify_all()
 
 
@@ -1033,8 +1089,7 @@ def _note_limited(force: bool = False) -> None:
     """记一次限流；同一窗口内连续两次就降一级（4→2→1）。
 
     L24：本机到 CDN 的连接被拒（WinError 10061）不是 B 站风控，但同样是
-    「并发过高」的明确信号，download_audio 会传 force=True 立刻降一级，
-    免得四个 yt-dlp 一直硬撞、每首都退避重试到超时。
+    「并发过高」的明确信号，download_audio 会传 force=True 立刻降一级。
     """
     global _LANES, _RISK_STREAK, _OK_STREAK, _LAST_RISK_TS, _LAST_DOWN_TS
     with _LANE_COND:
@@ -2038,7 +2093,7 @@ def _make_progress_hook(cancel, on_progress=None):
 # 手机端移植：playurl/VIEW_API 走本文件的 _http_json（params 形式）。
 
 _PROBE_BYTES = 262144        # 每个节点先拉 256KB 测速
-_DL_THREADS = 8
+_DL_THREADS = 2
 
 
 
@@ -2075,10 +2130,12 @@ def _stream_opener():
     """给每个下载线程单独的 opener。
 
     urllib 的 OpenerDirector 不是线程安全的（内部 handler 有共享状态），
-    8 个线程共用一个迟早会互相踩；但 cookie jar 可以共享，它自己带锁。
+    多个线程共用一个迟早会互相踩；但 cookie jar 可以共享，它自己带锁。
     """
-    op = urllib.request.build_opener(
-        urllib.request.HTTPCookieProcessor(_COOKIE_JAR))
+    handlers = [urllib.request.HTTPCookieProcessor(_COOKIE_JAR)]
+    if _SSL_CTX is not None:
+        handlers.append(urllib.request.HTTPSHandler(context=_SSL_CTX))
+    op = urllib.request.build_opener(*handlers)
     op.addheaders = [("User-Agent", UA)]
     return op
 

@@ -14,7 +14,6 @@ import sys
 import threading
 import unicodedata
 import time
-import urllib.parse
 from pathlib import Path
 
 from kivy.app import App
@@ -1581,11 +1580,35 @@ class QRLoginView(ModalView):
             self.status.color = (0.95, 0.45, 0.45, 1)
             return
         self._key = key
-        q = urllib.parse.quote(url, safe="")
-        self.img.source = ("https://api.qrserver.com/v1/create-qr-code/"
-                           f"?size=300x300&margin=8&data={q}")
-        self.status.text = "用 B 站 App 扫上方二维码"
+        self.img.source = ""
+        self.status.text = "正在生成二维码…"
+        self.status.color = (0.78, 0.80, 0.84, 1)
+        threading.Thread(target=self._qr_worker, args=(url,), daemon=True).start()
         self._ev = Clock.schedule_interval(lambda dt: self._poll(), 2.0)
+
+    def _qr_worker(self, url: str):
+        """二维码图片自己下（core 带内置 CA），UI 只读本地文件。"""
+        try:
+            png = core.fetch_qr_png(url)
+            if not png.startswith(b"\x89PNG"):
+                raise RuntimeError("返回的不是 PNG")
+            path = pc.data_dir() / f"qr-{int(time.time())}.png"
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(png)
+        except Exception as e:
+            msg = f"{type(e).__name__}: {e}"
+            Clock.schedule_once(lambda dt, _m=msg: self._qr_fail(_m), 0)
+            return
+        Clock.schedule_once(lambda dt, _p=str(path): self._qr_ready(_p), 0)
+
+    def _qr_fail(self, msg: str):
+        self.status.text = f"二维码下载失败：{msg}"
+        self.status.color = (0.95, 0.45, 0.45, 1)
+
+    def _qr_ready(self, path: str):
+        self.img.source = path
+        self.status.text = "用 B 站 App 扫上方二维码"
+        self.status.color = (0.78, 0.80, 0.84, 1)
 
     def _poll(self):
         if not self._key:
