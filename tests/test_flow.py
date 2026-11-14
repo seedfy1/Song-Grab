@@ -159,7 +159,6 @@ def test_stale_bvid_falls_back_to_trial():
 
     with patched(resolve_video=boom, search_both=fake_search,
                  known_good_lookup=lambda *a, **k: None,
-                 lookup_artist_priority=lambda *a, **k: ("", ""),
                  lookup_artist_candidates=lambda *a, **k: []):
         res = core.process_song("晴天", {"output_dir": str(OUT)}, WORK,
                                 bvid_override="BVdead")
@@ -198,7 +197,6 @@ def test_filename_is_song_only_and_tag_unknown():
                  record_download=lambda *a, **k: None,
                  known_good_put=lambda *a, **k: None,
                  load_artists=lambda: {}, save_artist=lambda *a, **k: None,
-                 lookup_artist_priority=lambda *a, **k: ("", ""),
                  lookup_artist_candidates=lambda *a, **k: [],
                  resolve_video=lambda _i: {"bvid": "BV1x", "title": "周杰伦《晴天》",
                                            "duration": 269, "author": "UP",
@@ -222,7 +220,6 @@ def test_multi_page_download_and_filename():
                  record_download=lambda *a, **k: None,
                  known_good_put=lambda *a, **k: None,
                  load_artists=lambda: {}, save_artist=lambda *a, **k: None,
-                 lookup_artist_priority=lambda *a, **k: ("", ""),
                  lookup_artist_candidates=lambda *a, **k: [],
                  resolve_video=lambda _i: {"bvid": "BV1x", "title": "002. 晴天-周杰伦",
                                            "duration": 269, "author": "UP",
@@ -288,7 +285,6 @@ def test_trial_all_covers_is_pending():
                        author="UP2")]
     with patched(_trial_search=lambda kw, say=None: list(cards),
                  known_good_lookup=lambda *a, **k: None,
-                 lookup_artist_priority=lambda *a, **k: ("", ""),
                  lookup_artist_candidates=lambda *a, **k: []):
         tr = core.trial_song("晴天", {"min_play": 1, "min_dur": 50, "max_dur": 720})
     assert tr["stage"] == "pending", tr
@@ -300,7 +296,6 @@ def test_trial_want_cover_not_filtered():
                        author="UP1")]
     with patched(_trial_search=lambda kw, say=None: list(cards),
                  known_good_lookup=lambda *a, **k: None,
-                 lookup_artist_priority=lambda *a, **k: ("", ""),
                  lookup_artist_candidates=lambda *a, **k: []):
         tr = core.trial_song("晴天 翻唱", {"min_play": 1, "min_dur": 50, "max_dur": 720})
     assert tr["stage"] in ("success", "pending"), tr

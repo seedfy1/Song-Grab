@@ -1,4 +1,4 @@
 {
-  "build": "20261114-2205",
-  "note": "二维码改为本机生成（内置 qrcode 纯 Python 子集 + zlib 写 PNG），彻底不再依赖在线图片服务，也就不会再被 Android 的证书问题卡住；SSL 兜底：一份 CA 都找不到时降级为不校验证书而不是让所有联网直接失败；CA 查找改为在工程目录与私有目录里浅递归找 *.pem；全链路默认并发 2 路（搜索 2、下载 2）"
+  "build": "20261114-2358",
+  "note": "彻底安卓化与精简：删掉 Windows 专用分支与 17 个无引用函数，样板 try/except 改 contextlib.suppress；修掉一处日志前向引用 bug（找不到 CA 的告警以前从来没落盘）；platform_compat 重写为 Android 优先"
 }

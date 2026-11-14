@@ -3,7 +3,7 @@
 设计原则：
 - 不依赖浏览器；搜索走 B 站公开 web 接口。
 - 下载走 yt-dlp（Python API），转封装走 ffmpeg（子进程，静默）。
-- 所有外部进程一律 CREATE_NO_WINDOW，避免弹黑框。
+- 外部进程一律静默执行（不弹窗、不读 stdin）。
 """
 
 from __future__ import annotations
@@ -28,6 +28,7 @@ from pathlib import Path
 from typing import Any
 
 import platform_compat as _pc
+import contextlib
 
 # ---------------------------------------------------------------- 路径与常量
 
@@ -35,9 +36,7 @@ __version__ = "1.1.3"
 
 
 def app_dir() -> Path:
-    """程序所在目录（打包后为 exe 同级目录）。"""
-    if getattr(sys, "frozen", False):
-        return Path(sys.executable).resolve().parent
+    """程序所在目录（源码树根）。"""
     return Path(__file__).resolve().parent.parent
 
 
@@ -83,8 +82,6 @@ UA = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
     "(KHTML, like Gecko) Chrome/120.0 Safari/537.36"
 )
-
-NO_WINDOW = 0x08000000 if os.name == "nt" else 0  # CREATE_NO_WINDOW
 
 # 默认不设优先词条：选片只按播放量，词条由用户在界面上自行添加（支持正则）
 DEFAULT_PRIORITY: list[str] = []
@@ -219,16 +216,9 @@ def resolve_output_dir(cfg: dict[str, Any]) -> Path:
     raw = (cfg.get("output_dir") or "").strip()
     # 统一成 Windows 反斜杠：正斜杠会让 os.startfile / ShellExecute 报 WinError 5
     p = Path(os.path.normpath(raw)) if raw else desktop_dir()
-    try:
+    with contextlib.suppress(Exception):
         p.mkdir(parents=True, exist_ok=True)
-    except Exception:
-        pass
     return p
-
-
-def open_in_explorer(folder: Path, select_file: Path | None = None) -> tuple[bool, str]:
-    """打开文件夹（Android 走 am start，桌面走文件管理器）。"""
-    return _pc.open_folder(Path(str(folder)), select_file)
 
 
 def dir_writable_detail(p: Path) -> tuple[bool, str]:
@@ -245,10 +235,8 @@ def dir_writable_detail(p: Path) -> tuple[bool, str]:
         try:
             with open(probe, "w", encoding="utf-8") as f:
                 f.write("ok")
-            try:
+            with contextlib.suppress(Exception):
                 probe.unlink()
-            except Exception:
-                pass
             return True, "可写"
         except Exception as e:
             errs.append(f"{name}: {type(e).__name__}: {e}")
@@ -257,20 +245,13 @@ def dir_writable_detail(p: Path) -> tuple[bool, str]:
         import tempfile
         fd, tmp = tempfile.mkstemp(dir=str(p), prefix="sg_", suffix=".tmp")
         os.close(fd)
-        try:
+        with contextlib.suppress(Exception):
             os.unlink(tmp)
-        except Exception:
-            pass
         return True, "可写（tempfile）"
     except Exception as e:
         errs.append(f"tempfile: {type(e).__name__}: {e}")
 
     return False, "；".join(errs[:3])
-
-
-def dir_writable(p: Path) -> bool:
-    return dir_writable_detail(p)[0]
-
 
 
 CONFIRM_FILE = _pc.data_dir() / "confirm.json"
@@ -788,10 +769,6 @@ def sanitize_filename(name: str, max_bytes: int = 120) -> str:
     return name or "unnamed"
 
 
-def file_stem_ok(stem: str, taken: set[str]) -> bool:
-    return stem not in taken
-
-
 # ---------------------------------------------------------------- 搜索
 
 @dataclass
@@ -1017,6 +994,27 @@ def qr_login_poll(qrcode_key: str) -> tuple[int, str, dict[str, str]]:
     return 0, "登录成功", cookies
 
 
+# L41: 关键路径（写盘/台账/续传）吞掉的异常留一行痕迹；
+# 同一位置每进程只记一次，避免日志刷屏；写日志本身失败绝不再抛。
+_LOG_ONCE: set[str] = set()
+_LOG_ONCE_LOCK = threading.Lock()
+
+
+def _log_swallowed(where: str, exc: BaseException | None = None) -> None:
+    try:
+        key = "%s:%s" % (where, type(exc).__name__ if exc is not None else "-")
+        with _LOG_ONCE_LOCK:
+            if key in _LOG_ONCE:
+                return
+            _LOG_ONCE.add(key)
+        line = "%s [%s] %s: %s\n" % (
+            time.strftime("%Y-%m-%d %H:%M:%S"), where,
+            type(exc).__name__ if exc is not None else "Exception", exc)
+        with open(APP_DIR / "debug.log", "a", encoding="utf-8") as f:
+            f.write(line)
+    except Exception:
+        pass
+
 _COOKIE_JAR = http.cookiejar.CookieJar()
 
 
@@ -1033,10 +1031,8 @@ def _ssl_context():
             return ssl.create_default_context(cafile=ca)
     except Exception:
         pass
-    try:
+    with contextlib.suppress(Exception):
         _log_swallowed("ssl", RuntimeError("没有可用的 CA 文件，本进程不校验证书"))
-    except Exception:
-        pass
     try:
         return ssl._create_unverified_context()  # noqa: SLF001
     except Exception:
@@ -1091,46 +1087,6 @@ _KEY_LOCK = threading.RLock()   # 可重入：取密钥时若再走签名逻辑�
 # ---- L24 批量并行：catalog.json / compare.json / artists.json 都是「读全量→改→原子写」，
 # 多线程同时进来会互相覆盖（后写的把先写的记录整段冲掉）。所有这类写盘统一走这把锁。
 _DISK_LOCK = threading.RLock()
-
-# L41: 关键路径（写盘/台账/续传）吞掉的异常留一行痕迹；
-# 同一位置每进程只记一次，避免日志刷屏；写日志本身失败绝不再抛。
-_LOG_ONCE: set[str] = set()
-_LOG_ONCE_LOCK = threading.Lock()
-
-
-def _log_swallowed(where: str, exc: BaseException | None = None) -> None:
-    try:
-        key = "%s:%s" % (where, type(exc).__name__ if exc is not None else "-")
-        with _LOG_ONCE_LOCK:
-            if key in _LOG_ONCE:
-                return
-            _LOG_ONCE.add(key)
-        line = "%s [%s] %s: %s\n" % (
-            time.strftime("%Y-%m-%d %H:%M:%S"), where,
-            type(exc).__name__ if exc is not None else "Exception", exc)
-        with open(APP_DIR / "debug.log", "a", encoding="utf-8") as f:
-            f.write(line)
-    except Exception:
-        pass
-
-
-def search_concurrency() -> int:
-    """当前实际并发路数（1/2），GUI 或测试可读。"""
-    return _LANES
-
-
-def _reset_search_concurrency() -> None:
-    """测试用：恢复默认 2 路并清空统计。"""
-    global _LANES, _RISK_STREAK, _OK_STREAK, _LAST_RISK_TS, _LAST_DOWN_TS
-    with _LANE_COND:
-        _LANES = _LANE_LEVELS[0]
-        _RISK_STREAK = 0
-        _OK_STREAK = 0
-        _LAST_RISK_TS = 0.0
-        _LAST_DOWN_TS = 0.0
-        _LANE_NEXT[:] = [0.0] * len(_LANE_LEVELS)
-        _LANE_COND.notify_all()
-
 
 def _note_limited(force: bool = False) -> None:
     """记一次限流；同一窗口内连续两次就降一级（4→2→1）。
@@ -1252,39 +1208,6 @@ def _wbi_key(force: bool = False) -> str:
 
 _LOGIN_CACHE: dict[str, Any] = {"ts": 0.0, "ok": False, "name": "", "code": -1, "msg": ""}
 _LOGIN_TTL = 300
-
-
-def bili_login_state(force: bool = False) -> dict[str, Any]:
-    """L20: 检测 B 站登录态，用于「登录后作者名更准确」提示与风控解释。
-
-    返回 {"ok": bool, "name": str, "code": int, "msg": str}；结果缓存 5 分钟，
-    避免每首歌都打一次 nav 接口。未导入 cookie 时 ok=False，属正常情况。
-    """
-    global _LOGIN_CACHE
-    now = time.time()
-    if (not force and _LOGIN_CACHE.get("ts")
-            and now - float(_LOGIN_CACHE["ts"]) < _LOGIN_TTL):
-        return dict(_LOGIN_CACHE)
-    res: dict[str, Any] = {"ts": now, "ok": False, "name": "", "code": -1, "msg": "未检测"}
-    failed = False
-    try:
-        data = _http_json(NAV_API, retries=1, sign=False)
-        res["code"] = int(data.get("code") or 0)
-        if res["code"] == 0:
-            d = data.get("data") or {}
-            res["ok"] = bool(d.get("isLogin"))
-            res["name"] = str(d.get("uname") or "")
-            res["msg"] = "已登录" if res["ok"] else "未登录"
-        else:
-            res["msg"] = str(data.get("message") or "")
-    except Exception as exc:
-        failed = True
-        res["msg"] = f"{type(exc).__name__}: {exc}"
-    # FIX(L25/B5): 异常结果不写缓存。nav 抖一次就被缓存 5 分钟，会让界面一直
-    # 显示「未登录 B 站」，即使 cookie 完全正常；失败就让下次调用重新探测。
-    if not failed:
-        _LOGIN_CACHE = res
-    return dict(res)
 
 
 def _wbi_sign(params: dict[str, Any]) -> str:
@@ -2388,10 +2311,8 @@ def download_audio(bvid: str, workdir: Path, use_cookies: bool = False,
                     junk.unlink()
             except Exception:
                 pass
-        try:
+        with contextlib.suppress(Exception):
             sys.stderr.write(f"[dash] 回退 yt-dlp：{type(e).__name__}: {e}\n")
-        except Exception:
-            pass
     return _download_ytdlp(bvid, workdir, page=page)
 
 
@@ -2434,10 +2355,8 @@ def _download_ytdlp(bvid: str, workdir: Path, use_cookies: bool = True,
         for p in workdir.iterdir():
             if p.is_file() and (p.name.startswith(bvid)
                                 or p.name.endswith((".part", ".ytdl"))):
-                try:
+                with contextlib.suppress(Exception):
                     p.unlink()
-                except Exception:
-                    pass
         raise
     except Exception as exc:
         # L24: 多路并行下载时最先崩的往往是本机到 CDN 的连接（WinError 10061）。
@@ -2483,7 +2402,6 @@ def _run_ffmpeg(cmd: list[str], dst: Path, cancel=None, timeout: float = 900.0) 
     try:
         proc = subprocess.Popen(
             cmd, stdout=subprocess.DEVNULL, stderr=err_file,
-            creationflags=NO_WINDOW,
         )
         # 轮询而不是 wait()：停止按钮能在 0.15 秒内生效
         waited = 0.0
@@ -2495,10 +2413,8 @@ def _run_ffmpeg(cmd: list[str], dst: Path, cancel=None, timeout: float = 900.0) 
                 except Exception:
                     proc.kill()
                     # FIX(L25/B8): kill 之后也要 wait，否则 Windows 上句柄延迟释放
-                    try:
+                    with contextlib.suppress(Exception):
                         proc.wait(timeout=2)
-                    except Exception:
-                        pass
                 dst.unlink(missing_ok=True)
                 raise Cancelled("用户停止")
             time.sleep(0.15)
@@ -2506,10 +2422,8 @@ def _run_ffmpeg(cmd: list[str], dst: Path, cancel=None, timeout: float = 900.0) 
             if waited > timeout:
                 proc.kill()
                 # FIX(L25/B8): kill 后 wait 一下，确保进程真的被回收
-                try:
+                with contextlib.suppress(Exception):
                     proc.wait(timeout=2)
-                except Exception:
-                    pass
                 dst.unlink(missing_ok=True)
                 raise RuntimeError("ffmpeg 超时")
         if proc.returncode != 0:
@@ -2550,10 +2464,6 @@ def convert_audio(src: Path, dst: Path, title: str, artist: str, fmt: str = "m4a
         os.replace(tmp_dst, dst)
     finally:
         tmp_dst.unlink(missing_ok=True)
-
-
-def convert_to_m4a(src: Path, dst: Path, title: str, artist: str) -> None:
-    convert_audio(src, dst, title, artist, "m4a")
 
 
 def tag_media(src: Path, dst: Path, title: str, artist: str, cancel=None) -> None:
@@ -2618,10 +2528,8 @@ def download_video(bvid: str, workdir: Path, page: int = 1,
         for p in workdir.iterdir():
             if p.is_file() and (p.name.startswith(bvid)
                                 or p.name.endswith((".part", ".ytdl"))):
-                try:
+                with contextlib.suppress(Exception):
                     p.unlink()
-                except Exception:
-                    pass
         raise
 
     fresh = []
@@ -2650,7 +2558,7 @@ def probe_streams(path: Path) -> tuple[float, bool, bool]:
     try:
         proc = subprocess.run(
             [str(FFMPEG), "-hide_banner", "-i", str(path)],
-            capture_output=True, creationflags=NO_WINDOW, timeout=120,
+            capture_output=True, timeout=120,
         )
     except Exception:
         return 0.0, False, False
@@ -2689,7 +2597,7 @@ def duration_ok(path: Path, expect_dur: float) -> tuple[bool, str]:
         proc = subprocess.run(
             [str(FFMPEG), "-hide_banner", "-loglevel", "error",
              "-i", str(path), "-f", "null", "-"],
-            capture_output=True, creationflags=NO_WINDOW,
+            capture_output=True,
             timeout=max(30.0, dur * 2),
         )
     except Exception as e:
@@ -2705,7 +2613,7 @@ def probe_media(path: Path) -> tuple[float, int]:
     try:
         proc = subprocess.run(
             [str(FFMPEG), "-hide_banner", "-i", str(path)],
-            capture_output=True, creationflags=NO_WINDOW, timeout=60,
+            capture_output=True, timeout=60,
         )
     except Exception:
         return 0.0, 0
@@ -2729,7 +2637,7 @@ def probe_acodec(path: Path) -> str:
     try:
         proc = subprocess.run(
             [str(FFMPEG), "-hide_banner", "-i", str(path)],
-            capture_output=True, creationflags=NO_WINDOW, timeout=60,
+            capture_output=True, timeout=60,
         )
     except Exception:
         return ""
@@ -2772,15 +2680,6 @@ def audio_ok(path: Path, expect_dur: float = 0.0) -> tuple[bool, str]:
 # compare.json：现状索引，随目录变化（惰性对账），用于判重
 
 _INDEX_CACHE: dict[str, tuple[float, int, dict[str, dict[str, Any]]]] = {}
-
-
-def clear_index_cache() -> None:
-    """清掉 compare.json 的解析缓存。
-
-    用户可能在资源管理器里删/改名成品，而 compare.json 的 mtime+size 没变时
-    缓存会继续返回旧内容。试搜与下载开始前调用一次，强制以磁盘为准。
-    """
-    _INDEX_CACHE.clear()
 
 
 def catalog_path(out_dir: Path) -> Path:
@@ -2923,11 +2822,9 @@ def _reconcile_catalog(out_dir: Path, files: dict[str, int]) -> None:
                 r.pop("deleted_at", None)
                 changed = True
         if changed:
-            try:
+            with contextlib.suppress(Exception):
                 _atomic_write(catalog_path(out_dir),
                               json.dumps(rows, ensure_ascii=False, indent=2))
-            except Exception:
-                pass
 
 
 def reconcile_compare(out_dir: Path) -> dict[str, dict[str, Any]]:
@@ -3117,11 +3014,6 @@ FAIL_KINDS: dict[str, str] = {
     "download_other": "下载失败",
     "user_skip": "用户跳过",
 }
-
-
-def fail_label(kind: str) -> str:
-    """把 fail_kind 翻成给人看的中文标签；未知码原样返回。"""
-    return FAIL_KINDS.get(str(kind or ""), str(kind or ""))
 
 
 # L32：可自动重试一次的失败类型。只覆盖「网络/直链抖动」这类重试有可能好的情况；
@@ -3458,10 +3350,8 @@ def lookup_artist_candidates(song: str, duration: int = 0) -> list[tuple[str, st
             try:
                 ex.shutdown(wait=False, cancel_futures=True)
             except TypeError:      # Python < 3.9 没有 cancel_futures
-                try:
+                with contextlib.suppress(Exception):
                     ex.shutdown(wait=False)
-                except Exception:
-                    pass
             except Exception:
                 pass
 
@@ -3472,13 +3362,6 @@ def lookup_artist_candidates(song: str, duration: int = 0) -> list[tuple[str, st
                 continue
             out.append((artist, name, dur))
     return out
-
-
-def lookup_artist(song: str) -> tuple[str, str]:
-    """兼容旧接口：返回第一个候选。"""
-    for a, s, _d in lookup_artist_candidates(song):
-        return a, s
-    return "", ""
 
 
 # ---------------------------------------------------------------- L14 试搜流程
@@ -3566,15 +3449,6 @@ def artist_from_mus(mus_all: list[tuple[str, str, int]],
         if a:
             return a, "bili_music"
     return "", ""
-
-
-def lookup_artist_priority(song: str, duration: int = 0) -> tuple[str, str]:
-    """L14 新流程的作者取法：固定优先级、每源只取第一条，命中即停。"""
-    try:
-        mus = lookup_artist_candidates(song, duration)
-    except Exception:
-        mus = []
-    return artist_from_mus(mus, song)
 
 
 _TITLE_BRACKET = re.compile(r"[【\[]([^】\]]{2,20})[】\]]")
@@ -4011,19 +3885,6 @@ def known_good_mark_missing(song: str, bvid: str) -> bool:
     return bool(_hit_write(KNOWN_GOOD_FILE, data) and hit)
 
 
-def known_bad_put(song: str, bvid: str, reason: str = "") -> bool:
-    """右键取消 / 用户否掉的 bvid：只降权，不硬剔；可撤销、30 天过期。"""
-    song, bvid = (song or "").strip(), (bvid or "").strip()
-    if not song or not bvid:
-        return False
-    data = _hit_read(KNOWN_BAD_FILE, {})
-    data["%s||%s" % (normalize(song), bvid)] = {
-        "song": song, "bvid": bvid, "reason": reason or "",
-        "ts": time.time(), "at": time.strftime("%Y-%m-%d %H:%M:%S"), "revoked": False,
-    }
-    return _hit_write(KNOWN_BAD_FILE, data)
-
-
 def known_bad_active(song: str, bvid: str) -> bool:
     """该 bvid 当前是否仍在降权期内（未撤销、未过期）。"""
     if EVAL_MODE:
@@ -4034,32 +3895,6 @@ def known_bad_active(song: str, bvid: str) -> bool:
         return False
     ts = float(rec.get("ts") or 0)
     return bool(ts) and (time.time() - ts <= _BAD_TTL_DAYS * 86400)
-
-
-def known_bad_undo(song: str, bvid: str) -> bool:
-    """撤销一条 known_bad（误点可恢复）。"""
-    data = _hit_read(KNOWN_BAD_FILE, {})
-    key = "%s||%s" % (normalize(_song_only(song)), (bvid or "").strip())
-    rec = data.get(key)
-    if not isinstance(rec, dict):
-        return False
-    rec["revoked"] = True
-    rec["revoked_at"] = time.strftime("%Y-%m-%d %H:%M:%S")
-    ok = _hit_write(KNOWN_BAD_FILE, data)
-    if ok:
-        # L44：撤销成功记一次流水（undone=true）
-        metrics_event("known_bad_undo", song=song or "", bvid=bvid or "", undone=True)
-    return ok
-
-
-def record_correction(song: str, old_bvid: str, new_bvid: str, *, tier: str = "",
-                      fail_kind: str = "", kind: str = "repick") -> bool:
-    """记录一次用户纠正动作（事件，不记作者结论，不碰 artists.json）。"""
-    return _hit_append(CORRECTIONS_FILE, {
-        "ts": time.time(), "at": time.strftime("%Y-%m-%d %H:%M:%S"),
-        "song": song or "", "old_bvid": old_bvid or "", "new_bvid": new_bvid or "",
-        "tier": tier or "", "fail_kind": fail_kind or "", "kind": kind,
-    })
 
 
 def metrics_event(kind: str, **fields: Any) -> bool:
@@ -4140,50 +3975,6 @@ def export_need_author(rows: Any, path: Path) -> int:
         _log_swallowed("export_need_author", exc)
         return 0
     return n
-
-
-def author_cov_stats(days: int = 30) -> dict[str, Any]:
-    """阶段 4 埋点：`+作者` 覆盖率、所写作者与命中条目作者的一致率（写法准确率代理）。"""
-    trials = [r for r in metrics_read(days) if r.get("kind") == "trial"]
-    with_hint = [r for r in trials if r.get("hint")]
-    hit = [r for r in with_hint if r.get("bvid")]
-    agree = [r for r in hit if r.get("artist_ok")]
-    return {
-        "trials": len(trials),
-        "with_hint": len(with_hint),
-        "coverage": round(len(with_hint) / len(trials), 4) if trials else 0.0,
-        "hit": len(hit),
-        "accuracy": round(len(agree) / len(hit), 4) if hit else 0.0,
-    }
-
-
-def verify_known_good(limit: int = 20) -> dict[str, int]:
-    """用 view?bvid 复核 known_good；失效标 missing、静默退回正常选片。"""
-    if EVAL_MODE:
-        return {"checked": 0, "missing": 0}
-    data = _hit_read(KNOWN_GOOD_FILE, {})
-    checked = missing = 0
-    for rec in list(data.values()):
-        if checked >= limit:
-            break
-        if not isinstance(rec, dict) or not rec.get("bvid") or rec.get("missing"):
-            continue
-        try:
-            info = _http_json("https://api.bilibili.com/x/web-interface/view",
-                              {"bvid": rec["bvid"]}, timeout=8, retries=1)
-        except Exception:
-            continue                      # 网络失败不算失效
-        checked += 1
-        if not info or int(info.get("code", -1)) != 0:
-            rec["missing"] = True
-            rec["last_verified"] = 0.0
-            missing += 1
-        else:
-            rec["last_verified"] = time.time()
-            rec["verified_at"] = time.strftime("%Y-%m-%d %H:%M:%S")
-    if checked:
-        _hit_write(KNOWN_GOOD_FILE, data)
-    return {"checked": checked, "missing": missing}
 
 
 def describe_song(line: str, cfg: dict[str, Any], say=None,
@@ -4898,36 +4689,6 @@ def trial_song(line: str, cfg: dict[str, Any] | None = None, say=None,
     return res
 
 
-def preview_song(line: str, cfg: dict[str, Any], progress=None,
-                 fallback: bool = False, cancel=None,
-                 bvid_override: str | None = None) -> SongResult:
-    """试搜：规则与「开始下载」完全一致，只是不下载文件。"""
-    say = progress or (lambda *a, **k: None)
-    # CAND(8): 把用户点选的 BV 透传给 describe_song，跳过搜索与选片
-    d = describe_song(line, cfg, say, fallback=fallback, cancel=cancel,
-                      bvid_override=bvid_override)
-    # CAND(9): 各个 return 点都带上候选池，界面据此展示「其它候选」
-    cands = d.get("candidates") or []
-    if d.get("need_name") and d.get("video"):
-        v = d["video"]
-        _lab = "指定视频" if d.get("forced") else "直链"
-        return SongResult(d["song"] or f"（{_lab}）", "preview",
-                          f"{_lab}《{v['title'][:40]}》，开始下载时会让你填歌名",
-                          "", v["bvid"], video_title=v["title"],
-                          candidates=cands)
-    if d["existing"] is not None:
-        return SongResult(d["song"], "skip", d["reason"], d["fname"],
-                          artist=d["artist"], candidates=cands)
-    if d["fail"] is not None:
-        fail = d["fail"]
-        fail.candidates = cands
-        return fail
-    card = d["card"]
-    return SongResult(d["song"], "preview", d["reason"], d["fname"], card.bvid,
-                      artist=d["artist"], pending=d["pending"],
-                      video_title=card.title, candidates=cands)
-
-
 def process_song(
     song_line: str,
     cfg: dict[str, Any],
@@ -5020,10 +4781,8 @@ def process_song(
     # FIX(M33): yt-dlp 中途失败时 raw 还是 None，已经写出的分片会永久留在临时目录。
     # 记下开工前的文件快照，收尾时把本次新出现的临时文件一并清掉。
     before: set[str] = set()
-    try:
+    with contextlib.suppress(Exception):
         before = {p.name for p in workdir.iterdir() if p.is_file()}
-    except Exception:
-        pass
     try:
         _check(cancel)
         fname = d["fname"]
@@ -5090,18 +4849,14 @@ def process_song(
         # 用户停止：半成品由 convert_audio / download_audio 自己清掉；
         # 状态记为 stopped，调用方不把它算进失败清单。
         if dst is not None:
-            try:
+            with contextlib.suppress(Exception):
                 dst.unlink(missing_ok=True)
-            except Exception:
-                pass
         return SongResult(song, "stopped", "用户停止", bvid=card.bvid,
                           artist=artist, video_title=card.title)
     except Exception as e:
         if dst is not None:
-            try:
+            with contextlib.suppress(Exception):
                 dst.unlink(missing_ok=True)
-            except Exception:
-                pass
         metrics_event("download_fail", song=song, bvid=card.bvid,
                       fail_kind=_classify_download_error(e))
         return SongResult(song, "fail", f"下载/转换失败：{e}", bvid=card.bvid,
@@ -5113,10 +4868,8 @@ def process_song(
         # 下一次同名下载会白白跳到「 (2)」，序号越积越多。
         release_dst(fname)
         if raw is not None:
-            try:
+            with contextlib.suppress(Exception):
                 raw.unlink(missing_ok=True)
-            except Exception:
-                pass
         # FIX(M33): 补清本次新出现、但没被 download_* 自己回收的临时文件。
         try:
             for p in workdir.iterdir():

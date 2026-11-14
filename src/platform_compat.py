@@ -1,6 +1,6 @@
-"""平台差异收口：Android(buildozer/python-for-android) 与桌面共用同一套 API。
+"""平台差异收口（Android 优先，桌面仅用于开发期测试）。
 
-core 只依赖这里的函数，不再直接碰 ctypes.windll / explorer / ffmpeg.exe。
+core / controller / UI 只依赖这里的函数，不直接碰 jnius、intent、ffmpeg 路径。
 """
 from __future__ import annotations
 
@@ -10,9 +10,11 @@ import subprocess
 import sys
 from pathlib import Path
 
+HERE = Path(__file__).resolve().parent
+PROJ_ROOT = HERE.parent
+
 # p4a 启动时会设置 ANDROID_ARGUMENT / ANDROID_PRIVATE
 IS_ANDROID = "ANDROID_ARGUMENT" in os.environ or hasattr(sys, "getandroidapilevel")
-IS_WIN = os.name == "nt"
 
 
 # ------------------------------------------------------------------ 路径
@@ -24,10 +26,9 @@ def data_dir() -> Path:
             from android.storage import app_storage_path  # type: ignore
             p = Path(app_storage_path())
         except Exception:
-            p = Path(os.environ.get("ANDROID_PRIVATE", "/data/data/songgrab/files"))
+            p = Path(os.environ.get("ANDROID_PRIVATE", "/data/data/org.fishmusic.songgrab/files"))
     else:
-        base = os.environ.get("XDG_DATA_HOME") or (Path.home() / ".local" / "share")
-        p = Path(base) / "songgrab"
+        p = Path(os.environ.get("XDG_DATA_HOME") or (Path.home() / ".local" / "share")) / "songgrab"
     p.mkdir(parents=True, exist_ok=True)
     return p
 
@@ -41,77 +42,71 @@ def artists_file() -> Path:
 
 
 def default_output_dir() -> Path:
-    """默认成品目录。Android 直接落到公共音乐目录。"""
+    """默认成品目录：Android 落到公共音乐目录，桌面落到 ~/Music/SongGrab。"""
     if IS_ANDROID:
         try:
             from android.storage import primary_external_storage_path  # type: ignore
             p = Path(primary_external_storage_path()) / "Music" / "SongGrab"
         except Exception:
             p = Path("/sdcard/Music/SongGrab")
-    elif IS_WIN:
-        p = Path(os.environ.get("USERPROFILE", str(Path.home()))) / "Music" / "SongGrab"
     else:
         p = Path.home() / "Music" / "SongGrab"
     try:
         p.mkdir(parents=True, exist_ok=True)
-    except Exception:
+    except OSError:
         pass
     return p
 
 
 def ca_bundle() -> Path | None:
-    """CA 证书包。Android 上没有系统证书路径，必须自带一份。
+    """CA 证书包。Android 上没有系统证书目录，必须自带一份。
 
-    L52：热更目录（/sdcard/Music/SongGrab/code）里没有 APK 的 assets，
-    所以再加一条「从 APK 资产解到私有目录」的路子 —— 解一次就缓存着用。
+    热更目录里没有 APK 的 assets，所以要顺着 private 目录浅递归找 *.pem
+    （p4a 各版本分别解到 files/ 或 files/app/）。
     """
-    cands = [PROJ_ROOT / "assets" / "ca_bundle_file", data_dir() / "ca_bundle_file"]
+    for c in (PROJ_ROOT / "assets" / "cacert.pem", data_dir() / "cacert.pem"):
+        if _is_ca(c):
+            return c
     try:
         import certifi  # type: ignore
-        cands.append(Path(certifi.where()))
+        c = Path(certifi.where())
+        if _is_ca(c):
+            return c
     except Exception:
         pass
-    for c in cands:
-        try:
-            if c.is_file() and c.stat().st_size > 10_000:
-                return c
-        except Exception:
-            continue
-    # 热更/私有目录里的 assets（p4a 会把 private.tar 解到 APP_PRIVATE 下，
-    # 具体是 files/ 还是 files/app/ 各版本不同），浅递归找一遍，免得写死路径
     for root in (PROJ_ROOT, data_dir()):
-        try:
-            for dirpath, dirnames, filenames in os.walk(root):
-                depth = dirpath[len(str(root)):].count(os.sep)
-                if depth >= 3:
-                    dirnames[:] = []
-                for fn in filenames:
-                    if not fn.endswith(".pem"):
-                        continue
-                    f = Path(dirpath) / fn
-                    try:
-                        if f.is_file() and f.stat().st_size > 10_000:
-                            return f
-                    except Exception:
-                        continue
-        except Exception:
-            continue
+        for f in _shallow_pems(root):
+            if _is_ca(f):
+                return f
     if IS_ANDROID:
-        dest = data_dir() / "ca_bundle_file"
+        dest = data_dir() / "cacert.pem"
         for name in ("cacert.pem", "assets/cacert.pem"):
-            try:
-                if _extract_asset(name, dest) and dest.stat().st_size > 10_000:
-                    return dest
-            except Exception:
-                continue
+            if _extract_asset(name, dest) and _is_ca(dest):
+                return dest
     return None
 
 
-def cookies_file() -> Path | None:
-    """用户导入的 cookies.txt。
+def _is_ca(p: Path) -> bool:
+    try:
+        return p.is_file() and p.stat().st_size > 10_000
+    except OSError:
+        return False
 
-    Android 上放开多个容易访问的位置，避免要求用户往 app 私有目录塞文件。
-    """
+
+def _shallow_pems(root: Path, max_depth: int = 3):
+    try:
+        for dirpath, dirnames, filenames in os.walk(root):
+            if dirpath[len(str(root)):].count(os.sep) >= max_depth:
+                dirnames[:] = []
+            for fn in filenames:
+                if fn.endswith(".pem"):
+                    yield Path(dirpath) / fn
+    except OSError:
+        return
+
+
+def cookies_file() -> Path | None:
+    """用户导入的 cookies.txt（Android 上放开几个容易访问的位置）。"""
     candidates = [data_dir() / "cookies.txt"]
     if IS_ANDROID:
         candidates += [
@@ -129,7 +124,7 @@ def cookies_file() -> Path | None:
         try:
             if c.exists() and c.stat().st_size > 200:
                 return c
-        except Exception:
+        except OSError:
             continue
     return None
 
@@ -140,26 +135,20 @@ def cookies_hint() -> str:
     if cf is None:
         return "未导入登录 cookie（匿名，易限流）"
     try:
-        text = cf.read_text(encoding="utf-8", errors="ignore")
-        if "SESSDATA" in text:
+        if "SESSDATA" in cf.read_text(encoding="utf-8", errors="ignore"):
             return f"已导入登录 cookie：{cf.name}"
         return f"已找到 {cf.name}，但里面没有 SESSDATA（可能没导出登录态）"
-    except Exception:
+    except OSError:
         return f"已找到 {cf.name}"
 
 
 # ------------------------------------------------------------------ ffmpeg
 
-HERE = Path(__file__).resolve().parent
-PROJ_ROOT = HERE.parent
-
-
 def android_native_lib(name: str = "libffmpeg.so") -> Path | None:
-    """APK 的 nativeLibraryDir（唯一允许 exec 的目录，Android 10+ 限制）。"""
+    """APK 的 nativeLibraryDir —— Android 10+ 唯一允许 exec 的目录。"""
     try:
         from jnius import autoclass  # type: ignore
-        PythonActivity = autoclass("org.kivy.android.PythonActivity")
-        info = PythonActivity.mActivity.getApplicationInfo()
+        info = autoclass("org.kivy.android.PythonActivity").mActivity.getApplicationInfo()
         p = Path(str(info.nativeLibraryDir)) / name
         return p if p.exists() else None
     except Exception:
@@ -180,12 +169,11 @@ def vendor_ffmpeg() -> Path | None:
 
 
 def _extract_asset(name: str, dest: Path) -> bool:
-    """把 APK assets 里的二进制解出来（仅在 Android 上有效）。"""
+    """把 APK assets 里的文件解出来（仅在 Android 上有效）。"""
     try:
         from android import mActivity  # type: ignore
-        assets = mActivity.getAssets()
         dest.parent.mkdir(parents=True, exist_ok=True)
-        with assets.open(name) as src, open(dest, "wb") as dst:
+        with mActivity.getAssets().open(name) as src, open(dest, "wb") as dst:
             shutil.copyfileobj(src, dst, 1 << 20)
         dest.chmod(0o755)
         return True
@@ -195,35 +183,30 @@ def _extract_asset(name: str, dest: Path) -> bool:
 
 def ffmpeg_path() -> Path:
     """Android 上从 nativeLibraryDir 取（该目录允许 exec）；桌面上找系统 ffmpeg。"""
-    if IS_ANDROID:
-        native = android_native_lib()
-        if native is not None:
-            return native
-        cached = data_dir() / "bin" / "ffmpeg"
-        vendored = vendor_ffmpeg()
-        if vendored is not None:
-            try:
-                need_copy = (not cached.exists()
-                             or cached.stat().st_size != vendored.stat().st_size)
-                if need_copy:
-                    cached.parent.mkdir(parents=True, exist_ok=True)
-                    shutil.copyfile(vendored, cached)
-                    cached.chmod(0o755)
-                return cached
-            except Exception:
-                pass
+    if not IS_ANDROID:
+        found = shutil.which("ffmpeg")
+        return Path(found) if found else PROJ_ROOT / "ffmpeg"
+
+    native = android_native_lib()
+    if native is not None:
+        return native
+    cached = data_dir() / "bin" / "ffmpeg"
+    vendored = vendor_ffmpeg()
+    if vendored is not None:
+        try:
+            if not cached.exists() or cached.stat().st_size != vendored.stat().st_size:
+                cached.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copyfile(vendored, cached)
+                cached.chmod(0o755)
+        except OSError:
+            pass
         if cached.exists():
             return cached
-        for name in ("ffmpeg", "ffmpeg-aarch64"):
-            if _extract_asset(name, cached):
-                return cached
-        found = shutil.which("ffmpeg")
-        return Path(found) if found else cached
-
+    for name in ("ffmpeg", "ffmpeg-aarch64"):
+        if _extract_asset(name, cached):
+            return cached
     found = shutil.which("ffmpeg")
-    if found:
-        return Path(found)
-    return PROJ_ROOT / "ffmpeg"
+    return Path(found) if found else cached
 
 
 def ffmpeg_ok() -> tuple[bool, str]:
@@ -232,72 +215,60 @@ def ffmpeg_ok() -> tuple[bool, str]:
         return False, f"未找到 ffmpeg：{exe}"
     try:
         r = subprocess.run([str(exe), "-version"], capture_output=True, timeout=15)
-        if r.returncode == 0:
-            first = (r.stdout or b"").decode("utf-8", "ignore").splitlines()[:1]
-            return True, first[0] if first else str(exe)
-        return False, f"ffmpeg 退出码 {r.returncode}"
-    except Exception as e:
+    except (OSError, subprocess.SubprocessError) as e:
         return False, f"ffmpeg 无法执行：{e}"
+    if r.returncode != 0:
+        return False, f"ffmpeg 退出码 {r.returncode}"
+    head = (r.stdout or b"").decode("utf-8", "ignore").splitlines()[:1]
+    return True, head[0] if head else str(exe)
 
 
 # ------------------------------------------------------------------ 打开目录
 
 def _intent_open(uri: str, mime: str | None = None) -> None:
     from jnius import autoclass  # type: ignore
-    PythonActivity = autoclass("org.kivy.android.PythonActivity")
     Intent = autoclass("android.content.Intent")
     Uri = autoclass("android.net.Uri")
     intent = Intent(Intent.ACTION_VIEW)
     intent.setDataAndType(Uri.parse(uri), mime) if mime else intent.setData(Uri.parse(uri))
     intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-    PythonActivity.mActivity.startActivity(intent)
+    autoclass("org.kivy.android.PythonActivity").mActivity.startActivity(intent)
 
 
 def open_folder(folder: Path, select_file: Path | None = None) -> tuple[bool, str]:
     folder = Path(folder)
     try:
         folder.mkdir(parents=True, exist_ok=True)
-    except Exception as e:
+    except OSError as e:
         return False, f"目录不可用：{e}"
 
-    if IS_ANDROID:
-        # 1) 先尝试直接定位到目标目录（documents provider 的 document URI）
-        doc_id = ""
-        s_folder = str(folder)
-        for prefix in ("/sdcard/", "/storage/emulated/0/"):
-            if s_folder.startswith(prefix):
-                doc_id = "primary:" + s_folder[len(prefix):]
-                break
-        if doc_id:
+    if not IS_ANDROID:
+        opener = ["open", str(folder)] if sys.platform == "darwin" else ["xdg-open", str(folder)]
+        try:
+            subprocess.Popen(opener)
+            return True, f"已打开 {folder}"
+        except OSError as e:
+            return False, f"打开失败：{e}（路径：{folder}）"
+
+    # 1) 直接定位到目标目录（documents provider 的 document URI）
+    for prefix in ("/sdcard/", "/storage/emulated/0/"):
+        s = str(folder)
+        if s.startswith(prefix):
             try:
                 import urllib.parse as _up
-                enc = _up.quote(doc_id, safe="")
+                enc = _up.quote("primary:" + s[len(prefix):], safe="")
                 _intent_open(
                     f"content://com.android.externalstorage.documents/document/{enc}",
                     "vnd.android.document/directory",
                 )
                 return True, f"已打开 {folder}"
             except Exception:
-                pass
-        # 2) 回退到文件管理器根目录
+                break
+    # 2) 回退到文件管理器根目录
+    for uri in ("content://com.android.externalstorage.documents/root/primary", str(folder)):
         try:
-            _intent_open("content://com.android.externalstorage.documents/root/primary")
-            return True, f"已打开文件管理器，请进入 {folder}"
-        except Exception:
-            pass
-        try:
-            _intent_open(str(folder))
+            _intent_open(uri)
             return True, f"已打开 {folder}"
-        except Exception as e:
-            return False, f"无法打开目录（路径：{folder}）：{e}"
-
-    try:
-        if IS_WIN:
-            os.startfile(str(folder))  # type: ignore[attr-defined]
-        elif sys.platform == "darwin":
-            subprocess.Popen(["open", str(folder)])
-        else:
-            subprocess.Popen(["xdg-open", str(folder)])
-        return True, f"已打开 {folder}"
-    except Exception as e:
-        return False, f"打开失败：{e}（路径：{folder}）"
+        except Exception:
+            continue
+    return False, f"无法打开目录（路径：{folder}）"
