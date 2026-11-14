@@ -608,7 +608,7 @@ class SongGrabApp(App):
             try:
                 tr = self.ctrl.trial(song, cfg)
             except Exception as e:
-                tr = {"stage": "fail", "reason": f"试搜失败：{e}", "candidates": []}
+                tr = {"stage": "failed", "reason": f"试搜失败：{e}", "candidates": []}
             Clock.schedule_once(lambda dt: self._show_trial(song, tr), 0)
 
         threading.Thread(target=_work, daemon=True).start()
@@ -696,7 +696,7 @@ class SongGrabApp(App):
         """曲师行：点一下就能改（冻结文档 §8.6「有作者可改」）。"""
         from kivy.uix.button import Button
         art = self.trial_artist.get(raw, tr.get("artist", ""))
-        src = tr.get("source", "")
+        src = tr.get("artist_source", "")
         if raw in self.trial_artist:
             src = "手动"
         text = (f"曲师：{art}（{src}）     改" if art
@@ -732,9 +732,9 @@ class SongGrabApp(App):
         """
         self.trial_src_artist[raw] = tr.get("artist", "")
         from kivy.uix.button import Button
-        stage = tr.get("stage", "fail")
-        head = {"ok": "【完全命中】", "confirm": "【待确认】",
-                "fail": "【没有选中】"}.get(stage, "【待确认】")
+        stage = tr.get("stage", "failed")
+        head = {"success": "【完全命中】", "pending": "【待确认】",
+                "failed": "【没有选中】"}.get(stage, "【待确认】")
         self.status_text = f"{head}：{tr.get('title') or tr.get('reason') or ''}"[:60]
 
         from kivy.uix.scrollview import ScrollView
@@ -748,8 +748,8 @@ class SongGrabApp(App):
             return w
 
         self._trial_view = view
-        head_color = {"ok": (0.45, 0.86, 0.55, 1), "confirm": (0.95, 0.78, 0.35, 1),
-                      "fail": (0.95, 0.50, 0.50, 1)}.get(stage, (0.9, 0.9, 0.9, 1))
+        head_color = {"success": (0.45, 0.86, 0.55, 1), "pending": (0.95, 0.78, 0.35, 1),
+                      "failed": (0.95, 0.50, 0.50, 1)}.get(stage, (0.9, 0.9, 0.9, 1))
         if cb:
             head = f"{head}  第 {cb.get('n', 1)}/{cb.get('m', 1)} 首"
         box.add_widget(lab(head, size=16, h=dp(30), color=head_color))
@@ -839,7 +839,7 @@ class SongGrabApp(App):
             if _song_of_raw(k) == song:
                 raw = k
                 break
-        self._show_trial(raw, {"stage": "confirm", "reason": "点「用这首」设为已确认音源",
+        self._show_trial(raw, {"stage": "pending", "reason": "点「用这首」设为已确认音源",
                                "candidates": cands,
                                "artist": self.trial_artist.get(raw, "")})
 
@@ -1124,7 +1124,7 @@ class SongGrabApp(App):
             try:
                 tr = core.trial_song(raw, cfg)
             except Exception as e:
-                tr = {"stage": "fail", "reason": f"试搜失败：{e}", "song": song}
+                tr = {"stage": "failed", "reason": f"试搜失败：{e}", "song": song}
             Clock.schedule_once(lambda dt: self._ask_one(item, tr), 0)
 
         threading.Thread(target=work, daemon=True).start()
@@ -1404,11 +1404,20 @@ class QRLoginView(ModalView):
         threading.Thread(target=self._poll_worker, daemon=True).start()
 
     def _poll_worker(self):
-        code, msg = core.qr_login_poll(self._key)
-        Clock.schedule_once(lambda dt: self._apply(code, msg), 0)
+        code, msg, ck = core.qr_login_poll(self._key)
+        Clock.schedule_once(lambda dt: self._apply(code, msg, ck), 0)
 
-    def _apply(self, code: int, msg: str):
+    def _apply(self, code: int, msg: str, cookies: dict | None = None):
         if code == 0:
+            if cookies:
+                try:
+                    lines = ["# Netscape Cookie File", "# 肥鱼音乐扫码登录", ""]
+                    lines += [f".bilibili.com\tTRUE\t/\tFALSE\t0\t{k}\t{v}"
+                              for k, v in cookies.items()]
+                    n, sess = core.save_cookie_text("\n".join(lines))
+                    msg = f"{msg}（已保存 {n} 条 Cookie{'，含 SESSDATA' if sess else ''}）"
+                except Exception as e:
+                    msg = f"{msg}（Cookie 保存失败：{e}）"
             if self._ev:
                 Clock.unschedule(self._ev)
                 self._ev = None

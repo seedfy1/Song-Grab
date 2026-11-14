@@ -153,3 +153,22 @@ Android 10+ 的 SELinux **禁止从 app 私有目录 exec 二进制**（`files/b
 - `minapi = 28`（Android 9+），因为预编译 ffmpeg 要求
 - 首次构建失败时看 Actions 里 `build-log` artifact
 - `MANAGE_EXTERNAL_STORAGE` 只适合自用；上架 Google Play 会被拒
+
+## 开源许可
+
+本仓库的**代码**以 [MIT](LICENSE) 许可发布，可自由使用、修改、分发与商用，
+保留版权声明即可。
+
+仓库里还打包了第三方二进制/字体，它们**不适用 MIT**，各自遵循原许可：
+
+| 内容 | 许可 | 来源 |
+|---|---|---|
+| `libs/arm64-v8a/libffmpeg.so` | LGPL-2.1 | 静态 FFmpeg，来自 [hzw1199/Android-FFmpeg-Prebuilt](https://github.com/hzw1199/Android-FFmpeg-Prebuilt) |
+| `assets/fonts/KaiTi-SC-Regular.ttf` | SIL OFL 1.1 | 由 [LXGW WenKai（霞鹜文楷）](https://github.com/lxgw/LxgwWenKai) 子集化并改名而来，许可全文见 `assets/fonts/OFL.txt` |
+| 用本工具下载的音频 | 归原视频作者与 B 站 | — |
+
+## 免责声明
+
+本项目仅用于**个人备份与离线收听**。下载的内容版权归原作者所有，请勿用于
+二次分发或商业用途。请遵守 B 站用户协议与当地法律法规；因使用本工具产生的
+任何版权纠纷由使用者自行承担。
