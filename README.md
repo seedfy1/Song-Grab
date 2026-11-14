@@ -16,25 +16,56 @@ songgrab.kv         全部布局（声明式）
 src/songgrab_core.py   业务核心（搜索/选片/下载/台账），仅打了平台补丁
 src/platform_compat.py 平台差异：路径、ffmpeg、打开目录、cookie
 src/controller.py      编排层：线程 + 事件队列，不依赖 UI 框架
-src/picker.py          选片链（过滤 → 加权打分 → 作者判定），纯离线可测
-src/metasrc.py         曲库查作者：QQ音乐 / Apple Music / 网易云（按优先级）
 docs/选片规则_冻结版.md   选片规则唯一规格（冻结，带 sha256 校验）
 libs/arm64-v8a/libffmpeg.so  静态 ffmpeg（伪装成 .so 以获得 exec 权限）
 buildozer.spec      打包配置
 .github/workflows/build.yml  CI 构建 APK
 ```
 
-## 与 Windows 原版的差异
+## 与 Windows 版的差异
 
-| 项 | 原版 | 这里 |
+**核心引擎是同一套**：手机版的 `src/songgrab_core.py` 就是 Windows 版
+[`song-grab1`](https://gitee.com/originthe-very-beginning/song-grab1) v1.1.3 的移植，
+只打了平台补丁（路径、ffmpeg、打开目录、cookie）。所以续传、校验、对账、
+known_good、故障统计这些能力两边都有。
+
+| 项 | Windows 版 | 这里 |
 |---|---|---|
 | 界面 | tkinter | Kivy（触摸友好） |
 | ffmpeg | 外部 ffmpeg.exe | **内置**：15MB 静态 aarch64 二进制，随 APK 分发 |
-| cookie | Edge 浏览器登录态 | 可选 `cookies.txt`（手机无浏览器 cookie 解密） |
+| cookie | Edge 浏览器登录态 | 扫码登录 + 可选 `cookies.txt` |
 | 输出目录 | 桌面 | `/sdcard/Music/SongGrab` |
 | 打开目录 | explorer | Android Intent → 文件管理器 |
 | 配置位置 | exe 同级 | 应用私有目录 |
 | 输入 | 歌名（+歌手） | 歌名（+歌手）、**B 站链接 / BV 号 / av 号 / b23.tv 短链** |
+| 手机端独有 | — | DASH 直链提速、多 P 选择、逐首确认、翻唱宽容 |
+
+## 换用 Windows 版引擎之后
+
+手机版原来的 core 是自研的轻量实现；Windows 版在 `song-grab1` 仓库里迭代到 1.1.3，
+多出一批工程能力。现在两边**共用同一套 core**：
+
+| 能力 | 说明 |
+|---|---|
+| 断点续传 | 停止后重开，接着上次的进度下（`resume.json`） |
+| 完整性校验 | 体积须在「码率 × 时长」的 0.7–1.2 倍内，转封装后时长差 ≤5 秒，不达标删文件记失败 |
+| 目录对账 | 启动时核对磁盘文件与 `catalog.json`，产出 `compare.json` |
+| known_good / known_bad | 记住「这首歌哪个 BV 是对的」，下次直接命中；稿件被删则自动拉黑 |
+| 故障统计 | `metrics.jsonl` → 可导出 `metrics.csv`、待补作者清单 |
+| 输出格式 | m4a / mp3(320k) / mp4 三态 |
+| 失败分类 | 12 类中文原因（风控 / 版权 / 无音轨 / 网络 …） |
+| 搜索并发自适应 | 撞到 412/429 自动从 4 路降到 2 路、再到 1 路 |
+
+保留的手机端专有能力：
+
+- **DASH 直链 + 节点测速 + 8 线程分块**（见下一节）
+- **多 P 视频**下载前选 P1 / P2 / 全部，文件名带 ` P2` 避免各集互相覆盖
+- **逐首确认**：试搜 → 三档结果（完全命中 / 待确认 / 没有选中）→ 用户点选
+- **翻唱宽容**：歌名自带「翻唱 / 现场 / 伴奏 / 钢琴」等词时，不做正片过滤，
+  并且候选池被过滤光时给加权前三条待选，而不是直接报 0 结果
+
+删掉的模块：`src/picker.py`、`src/metasrc.py` —— 选片链与曲库查作者都已并入 core，
+不再有两套实现。
 
 ### 粘链接直下
 
