@@ -1,5 +1,5 @@
 {
-  "build": "1.0.1",
-  "note": "1.0.1：对齐 Windows 端六项——批量结束自动对账（手动删/改名后修正台账）；设置页加最短/最长时长、曲库作者优先、自定义更新源；长按菜单加试听此版本/跳过此条/标记 BV 不合适(30天)/导出失败清单 txt；选歌与改写会记纠正流水和 known_good",
-  "seed": "https://cdn.jsdelivr.net/gh/seedfy1/Song-Grab@v1.0.1/assets/seed.zip"
+  "build": "1.0.2",
+  "note": "1.0.2：热更加固——只认带版本号的 seed（旧缓存包会被拒，不会再把旧代码写成新版本）；seed 源改为不可变 tag 地址并带 jsDelivr 多节点 + raw 兜底",
+  "seed": "https://cdn.jsdelivr.net/gh/seedfy1/Song-Grab@v1.0.2/assets/seed.zip"
 }

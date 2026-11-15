@@ -47,6 +47,9 @@ UPDATE_SEED_URLS = [
 ]
 CODE_DIR = Path("/sdcard/Music/SongGrab/code")
 
+# 官方 raw 兜底：jsDelivr 各节点都失败时才用（国内常见 20 KB/s，会慢但能成）
+RAW_SEED_URL = "https://raw.githubusercontent.com/seedfy1/Song-Grab/main/assets/seed.zip"
+
 
 def _http_get(url: str, timeout: int = 15) -> bytes:
     import ssl
@@ -104,6 +107,20 @@ def _bust_seed(url: str, want: str) -> str:
     return url + ("&" if "?" in url else "?") + "v=" + want
 
 
+def _mirror_urls(url: str) -> list[str]:
+    """同一不可变地址在 jsDelivr 各 CDN 节点上的镜像。
+
+    实测 cdn.jsdelivr.net 有时能到 1.5 MB/s，有时 7.7 MB 拖 60 s 都读不完；
+    fastly / gcore / testingcf 是独立节点，多试几个明显提高成功率。
+    地址里带 tag（@v1.0.1）才能保证各节点内容一致，浮动 @main 不行。
+    """
+    out = [url]
+    if "cdn.jsdelivr.net" in url:
+        for host in ("fastly.jsdelivr.net", "gcore.jsdelivr.net", "testingcf.jsdelivr.net"):
+            out.append(url.replace("cdn.jsdelivr.net", host, 1))
+    return out
+
+
 def _fetch_seed(want: str = "", urls: list[str] | None = None) -> bytes | None:
     """下载并校验源码包。
 
@@ -116,8 +133,11 @@ def _fetch_seed(want: str = "", urls: list[str] | None = None) -> bytes | None:
     """
     import io
     import zipfile
-    for url in (urls or UPDATE_SEED_URLS):
-        for _attempt in range(2):
+    urls = list(urls or UPDATE_SEED_URLS)
+    # 多源时每个源只试一次（避免最坏情况等 8 分钟），单源时仍重试一次
+    attempts = 2 if len(urls) == 1 else 1
+    for url in urls:
+        for _attempt in range(attempts):
             try:
                 data = _http_get(url, 60)
             except Exception:
@@ -185,9 +205,16 @@ def check_and_update(code_dir: Path = CODE_DIR) -> tuple[bool, str]:
     if custom:
         seed_urls = _seed_urls(custom, remote)
     elif isinstance(remote.get("seed"), str) and remote["seed"].strip():
-        seed_urls = [remote["seed"].strip()]
+        seed_urls = [remote["seed"].strip(), RAW_SEED_URL]
     else:
         seed_urls = list(UPDATE_SEED_URLS)
+    # jsDelivr 的多个节点各试一次
+    expanded: list[str] = []
+    for u in seed_urls:
+        for mu in _mirror_urls(u):
+            if mu not in expanded:
+                expanded.append(mu)
+    seed_urls = expanded
     data = _fetch_seed(rv, [_bust_seed(u, rv) for u in seed_urls])
     if not data:
         return False, "下载更新包失败（可稍后重试）"

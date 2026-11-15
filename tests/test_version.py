@@ -9,8 +9,8 @@ from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[1]
 APP_MAIN = REPO / "app_main.py"
-WANTED = {"_ver_key", "_base_dir", "_seed_urls", "_bust_seed", "_fetch_seed",
-          "check_and_update"}
+WANTED = {"_ver_key", "_base_dir", "_seed_urls", "_bust_seed", "_mirror_urls",
+          "_fetch_seed", "check_and_update"}
 
 
 def _updater_ns() -> dict:
@@ -24,6 +24,7 @@ def _updater_ns() -> dict:
         "CODE_DIR": Path("/nonexistent"),
         "UPDATE_SEED_URLS": ["https://example.invalid/seed.zip"],
         "UPDATE_VERSION_URLS": ["https://example.invalid/version.json"],
+        "RAW_SEED_URL": "https://raw.example/seed.zip",
     }
     exec(compile(ast.Module(body=defs, type_ignores=[]), "app_main.py", "exec"), ns)
     return ns
@@ -181,4 +182,17 @@ def test_default_seed_uses_remote_seed_field(tmp_path):
     assert ok is True
     assert seen["version_url"] == "https://example.invalid/version.json"
     assert seen["seed_urls"] == [
-        "https://cdn.example/gh/x/y@v1.0.1/assets/seed.zip?v=1.0.1"]
+        "https://cdn.example/gh/x/y@v1.0.1/assets/seed.zip?v=1.0.1",
+        "https://raw.example/seed.zip?v=1.0.1",
+    ]
+
+
+def test_mirror_urls_expands_jsdelivr_nodes():
+    ns = _updater_ns()
+    urls = ns["_mirror_urls"](
+        "https://cdn.jsdelivr.net/gh/x/y@v1.0.1/assets/seed.zip")
+    assert urls[0] == "https://cdn.jsdelivr.net/gh/x/y@v1.0.1/assets/seed.zip"
+    assert "https://fastly.jsdelivr.net/gh/x/y@v1.0.1/assets/seed.zip" in urls
+    assert len(urls) == 4
+    # 非 jsDelivr 地址原样返回
+    assert ns["_mirror_urls"]("https://mirror.example/a.zip") == ["https://mirror.example/a.zip"]
