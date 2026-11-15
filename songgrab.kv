@@ -298,136 +298,200 @@
 
 
 <SettingsScreen>:
-    BoxLayout:
-        orientation: 'vertical'
-        padding: dp(12)
-        spacing: dp(8)
-
+    ScrollView:
         BoxLayout:
-            size_hint_y: None
-            height: dp(48)
-            Button:
-                text: '返回'
-                font_name: app.font_name
-                font_size: sp(14)
-                size_hint_x: None
-                width: dp(64)
-                background_normal: ''
-                background_color: 0.25, 0.27, 0.33, 1
-                on_release: app.sm.current = 'main'
-            Label:
-                text: '设置'
-                font_name: app.font_name
-                font_size: sp(19)
-                bold: True
-
-        Label:
-            text: '输出目录'
-            font_name: app.font_name
-            font_size: sp(13)
-            color: 0.65, 0.67, 0.75, 1
-            size_hint_y: None
-            height: dp(22)
-            halign: 'left'
-            text_size: self.width, None
-        TextInput:
-            id: out_input
-            font_name: app.font_name
-            font_size: sp(13)
-            multiline: False
-            size_hint_y: None
-            height: dp(44)
-            background_color: 0.13, 0.14, 0.18, 1
-            foreground_color: 0.92, 0.93, 0.96, 1
-
-        BoxLayout:
-            size_hint_y: None
-            height: dp(44)
+            orientation: 'vertical'
+            padding: dp(12)
             spacing: dp(8)
+            size_hint_y: None
+            height: self.minimum_height
+
+            BoxLayout:
+                size_hint_y: None
+                height: dp(48)
+                Button:
+                    text: '返回'
+                    font_name: app.font_name
+                    font_size: sp(14)
+                    size_hint_x: None
+                    width: dp(64)
+                    background_normal: ''
+                    background_color: 0.25, 0.27, 0.33, 1
+                    on_release: app.sm.current = 'main'
+                Label:
+                    text: '设置'
+                    font_name: app.font_name
+                    font_size: sp(19)
+                    bold: True
+
             Label:
-                text: '最低播放量'
+                text: '输出目录'
                 font_name: app.font_name
-                font_size: sp(12)
+                font_size: sp(13)
                 color: 0.65, 0.67, 0.75, 1
-                size_hint_x: 0.42
+                size_hint_y: None
+                height: dp(22)
                 halign: 'left'
                 text_size: self.width, None
             TextInput:
-                id: play_input
+                id: out_input
                 font_name: app.font_name
                 font_size: sp(13)
                 multiline: False
-                input_filter: 'int'
+                size_hint_y: None
+                height: dp(44)
                 background_color: 0.13, 0.14, 0.18, 1
                 foreground_color: 0.92, 0.93, 0.96, 1
 
-        BoxLayout:
-            size_hint_y: None
-            height: dp(42)
-            spacing: dp(6)
+            BoxLayout:
+                size_hint_y: None
+                height: dp(44)
+                spacing: dp(8)
+                Label:
+                    text: '最低播放量'
+                    font_name: app.font_name
+                    font_size: sp(12)
+                    color: 0.65, 0.67, 0.75, 1
+                    size_hint_x: 0.42
+                    halign: 'left'
+                    text_size: self.width, None
+                TextInput:
+                    id: play_input
+                    font_name: app.font_name
+                    font_size: sp(13)
+                    multiline: False
+                    input_filter: 'int'
+                    background_color: 0.13, 0.14, 0.18, 1
+                    foreground_color: 0.92, 0.93, 0.96, 1
+
+            BoxLayout:
+                size_hint_y: None
+                height: dp(44)
+                spacing: dp(8)
+                Label:
+                    text: '时长(秒)'
+                    font_name: app.font_name
+                    font_size: sp(12)
+                    color: 0.65, 0.67, 0.75, 1
+                    size_hint_x: 0.30
+                    halign: 'left'
+                    text_size: self.width, None
+                TextInput:
+                    id: min_dur_input
+                    font_name: app.font_name
+                    font_size: sp(13)
+                    multiline: False
+                    input_filter: 'int'
+                    background_color: 0.13, 0.14, 0.18, 1
+                    foreground_color: 0.92, 0.93, 0.96, 1
+                Label:
+                    text: '~'
+                    font_name: app.font_name
+                    font_size: sp(13)
+                    color: 0.65, 0.67, 0.75, 1
+                    size_hint_x: None
+                    width: dp(16)
+                TextInput:
+                    id: max_dur_input
+                    font_name: app.font_name
+                    font_size: sp(13)
+                    multiline: False
+                    input_filter: 'int'
+                    background_color: 0.13, 0.14, 0.18, 1
+                    foreground_color: 0.92, 0.93, 0.96, 1
+
             Label:
-                text: '格式'
+                text: '时长范围：最短 / 最长（0 = 不限，默认 50 / 720 秒）'
                 font_name: app.font_name
-                font_size: sp(12)
-                color: 0.65, 0.67, 0.75, 1
-                size_hint_x: None
-                width: dp(46)
+                font_size: sp(10)
+                color: 0.45, 0.47, 0.55, 1
+                size_hint_y: None
+                height: dp(16)
                 halign: 'left'
                 text_size: self.width, None
-            Button:
-                id: fmt_m4a
-                text: 'm4a'
+
+            BoxLayout:
+                size_hint_y: None
+                height: dp(40)
+                spacing: dp(8)
+                Label:
+                    text: '曲库作者优先（同名歌优先原唱）'
+                    font_name: app.font_name
+                    font_size: sp(12)
+                    color: 0.65, 0.67, 0.75, 1
+                    halign: 'left'
+                    text_size: self.width, None
+                CheckBox:
+                    id: bili_music_check
+                    size_hint_x: None
+                    width: dp(44)
+
+            BoxLayout:
+                size_hint_y: None
+                height: dp(42)
+                spacing: dp(6)
+                Label:
+                    text: '格式'
+                    font_name: app.font_name
+                    font_size: sp(12)
+                    color: 0.65, 0.67, 0.75, 1
+                    size_hint_x: None
+                    width: dp(46)
+                    halign: 'left'
+                    text_size: self.width, None
+                Button:
+                    id: fmt_m4a
+                    text: 'm4a'
+                    font_name: app.font_name
+                    font_size: sp(12)
+                    background_normal: ''
+                    on_release: root.set_fmt('m4a')
+                Button:
+                    id: fmt_mp3
+                    text: 'mp3'
+                    font_name: app.font_name
+                    font_size: sp(12)
+                    background_normal: ''
+                    on_release: root.set_fmt('mp3')
+                Button:
+                    id: fmt_mp4
+                    text: 'mp4'
+                    font_name: app.font_name
+                    font_size: sp(12)
+                    background_normal: ''
+                    on_release: root.set_fmt('mp4')
+
+            Label:
+                text: 'mp4 仅在输入 BV 号 / 视频链接时生效，歌名搜索会按音频下载'
                 font_name: app.font_name
-                font_size: sp(12)
-                background_normal: ''
-                on_release: root.set_fmt('m4a')
-            Button:
-                id: fmt_mp3
-                text: 'mp3'
+                font_size: sp(11)
+                color: 0.62, 0.64, 0.72, 1
+                size_hint_y: None
+                height: dp(20)
+                halign: 'left'
+                text_size: self.width, None
+
+            Label:
+                text: '优先级词条（越靠上越优先，支持正则）'
                 font_name: app.font_name
-                font_size: sp(12)
-                background_normal: ''
-                on_release: root.set_fmt('mp3')
-            Button:
-                id: fmt_mp4
-                text: 'mp4'
+                font_size: sp(13)
+                color: 0.65, 0.67, 0.75, 1
+                size_hint_y: None
+                height: dp(22)
+                halign: 'left'
+                text_size: self.width, None
+
+            Label:
+                text: '可写正则，例：(Hi-?res|无损)  4K|官方  完整版'
                 font_name: app.font_name
-                font_size: sp(12)
-                background_normal: ''
-                on_release: root.set_fmt('mp4')
+                font_size: sp(10)
+                color: 0.45, 0.47, 0.55, 1
+                size_hint_y: None
+                height: dp(16)
+                halign: 'left'
+                text_size: self.width, None
+                shorten: True
 
-        Label:
-            text: 'mp4 仅在输入 BV 号 / 视频链接时生效，歌名搜索会按音频下载'
-            font_name: app.font_name
-            font_size: sp(11)
-            color: 0.62, 0.64, 0.72, 1
-            size_hint_y: None
-            height: dp(20)
-            halign: 'left'
-            text_size: self.width, None
-
-        Label:
-            text: '优先级词条（越靠上越优先，支持正则）'
-            font_name: app.font_name
-            font_size: sp(13)
-            color: 0.65, 0.67, 0.75, 1
-            size_hint_y: None
-            height: dp(22)
-            halign: 'left'
-            text_size: self.width, None
-
-        Label:
-            text: '可写正则，例：(Hi-?res|无损)  4K|官方  完整版'
-            font_name: app.font_name
-            font_size: sp(10)
-            color: 0.45, 0.47, 0.55, 1
-            size_hint_y: None
-            height: dp(16)
-            halign: 'left'
-            text_size: self.width, None
-            shorten: True
-
-        ScrollView:
             BoxLayout:
                 id: prio_box
                 orientation: 'vertical'
@@ -435,139 +499,158 @@
                 height: self.minimum_height
                 spacing: dp(4)
 
-        BoxLayout:
-            size_hint_y: None
-            height: dp(42)
-            spacing: dp(6)
+            BoxLayout:
+                size_hint_y: None
+                height: dp(42)
+                spacing: dp(6)
+                Button:
+                    text: '添加'
+                    font_name: app.font_name
+                    font_size: sp(12)
+                    background_normal: ''
+                    background_color: 0.25, 0.27, 0.33, 1
+                    on_release: app.ask_add_prio()
+                Button:
+                    text: '全部清空'
+                    font_name: app.font_name
+                    font_size: sp(12)
+                    background_normal: ''
+                    background_color: 0.25, 0.27, 0.33, 1
+                    on_release: root.reset_words()
+
+            Label:
+                text: app.cookie_hint
+                font_name: app.font_name
+                font_size: sp(11)
+                color: (0.45, 0.75, 0.55, 1) if '已导入' in app.cookie_hint else (0.75, 0.6, 0.35, 1)
+                size_hint_y: None
+                height: dp(20)
+                halign: 'left'
+                text_size: self.width, None
+
+            Label:
+                text: app.ffmpeg_hint
+                font_name: app.font_name
+                font_size: sp(11)
+                color: 0.55, 0.57, 0.65, 1
+                size_hint_y: None
+                height: dp(20)
+                halign: 'left'
+                text_size: self.width, None
+
             Button:
-                text: '添加'
+                text: '使用说明（第一次用请看这个）'
                 font_name: app.font_name
                 font_size: sp(12)
+                size_hint_y: None
+                height: dp(44)
                 background_normal: ''
-                background_color: 0.25, 0.27, 0.33, 1
-                on_release: app.ask_add_prio()
+                background_color: 0.22, 0.40, 0.30, 1
+                on_release: app.show_help()
+
             Button:
-                text: '全部清空'
+                text: '网络诊断（出问题点这个）'
                 font_name: app.font_name
                 font_size: sp(12)
+                size_hint_y: None
+                height: dp(40)
                 background_normal: ''
-                background_color: 0.25, 0.27, 0.33, 1
-                on_release: root.reset_words()
+                background_color: 0.30, 0.30, 0.36, 1
+                on_release: app.run_diag()
 
-        Label:
-            text: app.cookie_hint
-            font_name: app.font_name
-            font_size: sp(11)
-            color: (0.45, 0.75, 0.55, 1) if '已导入' in app.cookie_hint else (0.75, 0.6, 0.35, 1)
-            size_hint_y: None
-            height: dp(20)
-            halign: 'left'
-            text_size: self.width, None
-
-        Label:
-            text: app.ffmpeg_hint
-            font_name: app.font_name
-            font_size: sp(11)
-            color: 0.55, 0.57, 0.65, 1
-            size_hint_y: None
-            height: dp(20)
-            halign: 'left'
-            text_size: self.width, None
-
-        Button:
-            text: '使用说明（第一次用请看这个）'
-            font_name: app.font_name
-            font_size: sp(12)
-            size_hint_y: None
-            height: dp(44)
-            background_normal: ''
-            background_color: 0.22, 0.40, 0.30, 1
-            on_release: app.show_help()
-
-        Button:
-            text: '网络诊断（出问题点这个）'
-            font_name: app.font_name
-            font_size: sp(12)
-            size_hint_y: None
-            height: dp(40)
-            background_normal: ''
-            background_color: 0.30, 0.30, 0.36, 1
-            on_release: app.run_diag()
-
-        Button:
-            text: '扫码登录 B 站（提升音质 / 防限流）'
-            font_name: app.font_name
-            font_size: sp(12)
-            size_hint_y: None
-            height: dp(44)
-            background_normal: ''
-            background_color: 0.18, 0.42, 0.68, 1
-            on_release: app.open_qr_login()
-
-        Button:
-            text: '授予文件访问权限（写 /sdcard 必需）'
-            font_name: app.font_name
-            font_size: sp(12)
-            size_hint_y: None
-            height: dp(44)
-            background_normal: ''
-            background_color: 0.45, 0.35, 0.15, 1
-            on_release: app.ask_storage_permission()
-
-        BoxLayout:
-            size_hint_y: None
-            height: dp(40)
-            spacing: dp(6)
             Button:
-                text: '检查更新'
+                text: '扫码登录 B 站（提升音质 / 防限流）'
                 font_name: app.font_name
                 font_size: sp(12)
+                size_hint_y: None
+                height: dp(44)
                 background_normal: ''
-                background_color: 0.20, 0.34, 0.48, 1
-                on_release: app.check_update_now()
+                background_color: 0.18, 0.42, 0.68, 1
+                on_release: app.open_qr_login()
+
             Button:
-                text: '忘掉已确认的音源'
+                text: '授予文件访问权限（写 /sdcard 必需）'
                 font_name: app.font_name
                 font_size: sp(12)
+                size_hint_y: None
+                height: dp(44)
                 background_normal: ''
-                background_color: 0.32, 0.20, 0.24, 1
-                on_release: app.forget_confirm()
+                background_color: 0.45, 0.35, 0.15, 1
+                on_release: app.ask_storage_permission()
 
-        BoxLayout:
-            size_hint_y: None
-            height: dp(40)
-            spacing: dp(6)
-            Button:
-                text: '导出故障统计'
+            Label:
+                text: '自定义更新源（version.json 的 URL，留空 = 官方源）'
                 font_name: app.font_name
-                font_size: sp(12)
-                background_normal: ''
-                background_color: 0.28, 0.30, 0.36, 1
-                on_release: app.export_metrics()
-            Button:
-                text: '导出待补清单'
+                font_size: sp(10)
+                color: 0.45, 0.47, 0.55, 1
+                size_hint_y: None
+                height: dp(16)
+                halign: 'left'
+                text_size: self.width, None
+            TextInput:
+                id: update_url_input
                 font_name: app.font_name
-                font_size: sp(12)
+                font_size: sp(11)
+                multiline: False
+                size_hint_y: None
+                height: dp(40)
+                background_color: 0.13, 0.14, 0.18, 1
+                foreground_color: 0.92, 0.93, 0.96, 1
+
+            BoxLayout:
+                size_hint_y: None
+                height: dp(40)
+                spacing: dp(6)
+                Button:
+                    text: '检查更新'
+                    font_name: app.font_name
+                    font_size: sp(12)
+                    background_normal: ''
+                    background_color: 0.20, 0.34, 0.48, 1
+                    on_release: app.check_update_now()
+                Button:
+                    text: '忘掉已确认的音源'
+                    font_name: app.font_name
+                    font_size: sp(12)
+                    background_normal: ''
+                    background_color: 0.32, 0.20, 0.24, 1
+                    on_release: app.forget_confirm()
+
+            BoxLayout:
+                size_hint_y: None
+                height: dp(40)
+                spacing: dp(6)
+                Button:
+                    text: '导出故障统计'
+                    font_name: app.font_name
+                    font_size: sp(12)
+                    background_normal: ''
+                    background_color: 0.28, 0.30, 0.36, 1
+                    on_release: app.export_metrics()
+                Button:
+                    text: '导出待补清单'
+                    font_name: app.font_name
+                    font_size: sp(12)
+                    background_normal: ''
+                    background_color: 0.28, 0.30, 0.36, 1
+                    on_release: app.export_need_list()
+
+            Label:
+                text: app.update_hint
+                font_name: app.font_name
+                font_size: sp(11)
+                color: (0.45, 0.78, 0.55, 1) if '最新' in app.update_hint else (0.75, 0.68, 0.45, 1)
+                size_hint_y: None
+                height: dp(18)
+                halign: 'left'
+                text_size: self.width, None
+
+            Button:
+                text: '保存并返回'
+                font_name: app.font_name
+                font_size: sp(16)
+                size_hint_y: None
+                height: dp(50)
                 background_normal: ''
-                background_color: 0.28, 0.30, 0.36, 1
-                on_release: app.export_need_list()
-
-        Label:
-            text: app.update_hint
-            font_name: app.font_name
-            font_size: sp(11)
-            color: (0.45, 0.78, 0.55, 1) if '最新' in app.update_hint else (0.75, 0.68, 0.45, 1)
-            size_hint_y: None
-            height: dp(18)
-            halign: 'left'
-            text_size: self.width, None
-
-        Button:
-            text: '保存并返回'
-            font_name: app.font_name
-            font_size: sp(16)
-            size_hint_y: None
-            height: dp(50)
-            background_normal: ''
-            background_color: 0.20, 0.62, 0.38, 1
-            on_release: root.save()
+                background_color: 0.20, 0.62, 0.38, 1
+                on_release: root.save()

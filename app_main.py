@@ -74,7 +74,23 @@ def _ver_key(v: str) -> tuple:
         return (0, 0, 0)
 
 
-def _fetch_seed(want: str = "") -> bytes | None:
+def _base_dir(url: str) -> str:
+    return str(url or "").rsplit("/", 1)[0] + "/"
+
+
+def _seed_urls(version_url: str, remote: dict | None = None) -> list[str]:
+    """自定义更新源 → seed 地址。
+
+    优先用 version.json 里写的 seed；没写就取 version.json 同目录的
+    assets/seed.zip —— 与本仓库的目录结构一致。
+    """
+    seed = str((remote or {}).get("seed") or "").strip()
+    if seed:
+        return [seed]
+    return [_base_dir(version_url) + "assets/seed.zip"]
+
+
+def _fetch_seed(want: str = "", urls: list[str] | None = None) -> bytes | None:
     """下载并校验源码包。
 
     实测 raw.githubusercontent.com 偶尔返回 HTTP 200 但内容被截断
@@ -84,7 +100,7 @@ def _fetch_seed(want: str = "") -> bytes | None:
     """
     import io
     import zipfile
-    for url in UPDATE_SEED_URLS:
+    for url in (urls or UPDATE_SEED_URLS):
         for _attempt in range(2):
             try:
                 data = _http_get(url, 60)
@@ -117,7 +133,12 @@ def check_and_update(code_dir: Path = CODE_DIR) -> tuple[bool, str]:
     """检查并应用代码更新。返回 (是否更新, 说明)。"""
     remote = None
     errs: list[str] = []
-    for u in UPDATE_VERSION_URLS:
+    try:
+        custom = str(core.load_settings().get("update_version_url") or "").strip()
+    except Exception:
+        custom = ""
+    vurls = [custom] if custom else UPDATE_VERSION_URLS
+    for u in vurls:
         try:
             remote = json.loads(_http_get(u, 15).decode("utf-8", "ignore"))
             break
@@ -141,7 +162,7 @@ def check_and_update(code_dir: Path = CODE_DIR) -> tuple[bool, str]:
     if local and _ver_key(rv) <= _ver_key(local):
         return False, ""
 
-    data = _fetch_seed(rv)
+    data = _fetch_seed(rv, _seed_urls(custom, remote) if custom else None)
     if not data:
         return False, "下载更新包失败（可稍后重试）"
     # 先解到临时目录，校验通过再替换，避免半个包把现有代码写坏
@@ -557,6 +578,7 @@ class SongGrabApp(App):
             self.progress = 1.0
             self.running = False
             self._notify(f"下载完成：成功{s['ok']} 跳过{s['skip']} 失败{s['fail']}")
+            self._reconcile_async()
         elif ev.kind == "stopped":
             self.status_text = "已暂停，再点「开始下载」会从这一首接着下"
             self.running = False
@@ -891,7 +913,8 @@ class SongGrabApp(App):
             row.add_widget(Button(
                 text="用这首", font_name=FONT, font_size=sp(11),
                 size_hint_x=None, width=dp(74),
-                on_release=lambda *_ , c=c: self._trial_choose(raw, c, cb, view)))
+                on_release=lambda *_ , c=c: self._trial_choose(
+                    raw, c, cb, view, str(tr.get("bvid") or ""))))
             inner.add_widget(row)
         sv.add_widget(inner)
         box.add_widget(sv)
@@ -923,7 +946,8 @@ class SongGrabApp(App):
         view.add_widget(box)
         view.open()
 
-    def _trial_choose(self, raw: str, cand: dict, cb: dict | None, view) -> None:
+    def _trial_choose(self, raw: str, cand: dict, cb: dict | None, view,
+                      old_bvid: str = "") -> None:
         """候选行「用这首」。逐首确认模式走回调，否则按老路写进 confirmed。"""
         view.dismiss()
         if self._trial_view is view:
@@ -932,9 +956,9 @@ class SongGrabApp(App):
             self.trial_src_artist[raw] = cand.get("artist", "") or self.trial_src_artist.get(raw, "")
             cb["pick"](cand)
         else:
-            self._confirm_source(raw, cand)
+            self._confirm_source(raw, cand, old_bvid=old_bvid)
 
-    def _confirm_source(self, raw: str, cand: dict):
+    def _confirm_source(self, raw: str, cand: dict, old_bvid: str = ""):
         """记住用户选定的音源，并把该曲目加入「待下载」。"""
         if raw in self.trial_artist:
             art = self.trial_artist[raw]
@@ -946,7 +970,23 @@ class SongGrabApp(App):
             "title": cand.get("title", ""),
         }
         self._save_confirm()
+        self._record_pick(raw, cand, old_bvid)
         self.status_text = f"已选定：{cand.get('title', '')[:30]}"
+
+    def _record_pick(self, raw: str, cand: dict, old_bvid: str = "") -> None:
+        """用户手动选源：写纠正事件 + 沉淀 known_good（下次直接用它）。"""
+        song = _song_of_raw(raw) or str(cand.get("title") or "")
+        bvid = str(cand.get("bvid") or "").strip()
+        artist = str(cand.get("artist") or self.trial_src_artist.get(raw, "") or "")
+        if not song or not bvid:
+            return
+        try:
+            core.known_good_put(song, artist, bvid,
+                                title=str(cand.get("title") or ""), source="repick")
+            if old_bvid and old_bvid != bvid:
+                core.record_correction(song, old_bvid, bvid, kind="repick")
+        except Exception:
+            pass
 
     def _menu_btn(self, mv, text: str, cb, color=(0.22, 0.24, 0.30, 1)):
         b = Button(text=text, font_name=FONT, font_size=sp(13),
@@ -960,7 +1000,33 @@ class SongGrabApp(App):
         info = self.results.get(song) or {}
         bvid = str(info.get("bvid") or "")
         file = str(info.get("file") or "")
-        mv = ModalView(size_hint=(0.86, None), height=dp(360),
+        actions: list[tuple[str, object, tuple]] = []
+        if bvid:
+            actions.append((f"复制 BV 号（{bvid}）",
+                            lambda: self._copy(bvid), (0.22, 0.24, 0.30, 1)))
+            actions.append(("试听此版本（浏览器）",
+                            lambda: self._preview(bvid), (0.22, 0.34, 0.46, 1)))
+        actions.append(("复制歌名", lambda: self._copy(song), (0.22, 0.24, 0.30, 1)))
+        actions.append(("重新试搜这首", lambda: self.retry_song(song),
+                        (0.22, 0.24, 0.30, 1)))
+        if file:
+            actions.append(("改名（磁盘文件一起改）",
+                            lambda: self.rename_download(song, file),
+                            (0.22, 0.24, 0.30, 1)))
+        actions.append(("跳过此条（记为失败）", lambda: self.skip_song(song),
+                        (0.36, 0.26, 0.20, 1)))
+        if bvid:
+            actions.append(("标记此 BV 不合适（30 天降权）",
+                            lambda: self.mark_bad(song, bvid), (0.34, 0.22, 0.24, 1)))
+            if core.known_bad_active(song, bvid):
+                actions.append(("撤销不合适标记",
+                                lambda: self.undo_bad(song, bvid), (0.22, 0.30, 0.26, 1)))
+        actions.append(("导出失败清单为 txt", lambda: self.export_failed_txt(),
+                        (0.22, 0.26, 0.34, 1)))
+        actions.append(("打开所在目录", lambda: self.open_out_dir(),
+                        (0.22, 0.24, 0.30, 1)))
+        height = min(600, 76 + 48 * (len(actions) + 1))
+        mv = ModalView(size_hint=(0.88, None), height=dp(height),
                        background_color=(0.08, 0.09, 0.12, 0.98))
         box = BoxLayout(orientation="vertical", padding=dp(14), spacing=dp(8))
         head = Label(text=str(song), font_name=FONT, font_size=sp(15),
@@ -968,18 +1034,9 @@ class SongGrabApp(App):
                      halign="left", valign="middle", shorten=True)
         head.bind(size=lambda *_: setattr(head, "text_size", (head.width, None)))
         box.add_widget(head)
-        if bvid:
-            box.add_widget(self._menu_btn(mv, f"复制 BV 号（{bvid}）",
-                                          lambda: self._copy(bvid)))
-        box.add_widget(self._menu_btn(mv, "复制歌名", lambda: self._copy(song)))
-        box.add_widget(self._menu_btn(mv, "重新试搜这首",
-                                      lambda: (mv.dismiss(), self.retry_song(song))))
-        if file:
+        for text, cb, color in actions:
             box.add_widget(self._menu_btn(
-                mv, "改名（磁盘文件一起改）",
-                lambda: (mv.dismiss(), self.rename_download(song, file))))
-        box.add_widget(self._menu_btn(mv, "打开所在目录",
-                                      lambda: (mv.dismiss(), self.open_out_dir())))
+                mv, text, lambda cb=cb: (mv.dismiss(), cb()), color))
         box.add_widget(self._menu_btn(mv, "关闭", mv.dismiss,
                                       color=(0.25, 0.27, 0.33, 1)))
         mv.add_widget(box)
@@ -988,6 +1045,62 @@ class SongGrabApp(App):
     def _copy(self, s: str):
         Clipboard.copy(s)
         self.status_text = f"已复制：{s}"
+
+    def _preview(self, bvid: str):
+        """用系统浏览器打开这个 BV（手机上没有内嵌播放器）。"""
+        ok, note = pc.open_url(f"https://www.bilibili.com/video/{bvid}")
+        self.status_text = note or ("已打开浏览器" if ok else "打开失败")
+
+    def skip_song(self, song: str):
+        """长按菜单：把这一条记为失败/跳过（不参与后续重试）。"""
+        if self.running:
+            self.status_text = "正在下载，先点「暂停」再跳过"
+            return
+        info = dict(self.results.get(song) or {})
+        info.update({"song": song, "status": "fail", "reason": "用户跳过"})
+        self.results[song] = info
+        main: MainScreen = self.sm.get_screen("main")
+        main.upsert_row(song, "fail", "用户跳过")
+        if song not in self.failed_songs:
+            self.failed_songs.append(song)
+        self.status_text = f"已跳过：{song}"
+
+    def mark_bad(self, song: str, bvid: str):
+        ok = core.known_bad_put(song, bvid, reason="用户标记不合适")
+        self.status_text = (f"已标记不合适，30 天内不再优先选它：{bvid}"
+                            if ok else "标记失败")
+
+    def undo_bad(self, song: str, bvid: str):
+        ok = core.known_bad_undo(song, bvid)
+        self.status_text = "已撤销不合适标记" if ok else "没有可撤销的标记"
+
+    def export_failed_txt(self):
+        if not self.failed_songs:
+            self.status_text = "没有失败项"
+            return
+        try:
+            out = Path(self.out_dir)
+            out.mkdir(parents=True, exist_ok=True)
+            path = out / f"失败清单-{time.strftime('%Y%m%d-%H%M%S')}.txt"
+            lines = []
+            for song in self.failed_songs:
+                reason = str((self.results.get(song) or {}).get("reason") or "")
+                lines.append(f"{song}\t{reason}" if reason else song)
+            path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+            self.status_text = f"已导出失败清单：{path}"
+        except Exception as e:
+            self.status_text = f"导出失败：{e}"
+
+    def _reconcile_async(self):
+        """按磁盘对账一次：手动删/改名的成品，台账要跟着修正。"""
+        out_dir = Path(self.out_dir)
+
+        def work():
+            try:
+                core.reconcile_compare(out_dir)
+            except Exception:
+                pass
+        threading.Thread(target=work, daemon=True).start()
 
     def retry_song(self, song: str):
         """清掉这首记住的音源，重新试搜一遍（长按菜单）。"""
@@ -1052,6 +1165,7 @@ class SongGrabApp(App):
         PromptView(f"改名（不用写后缀）\n现在是：{old.name}", on_ok).open()
 
     def open_out_dir(self):
+        self._reconcile_async()
         try:
             ok, note = pc.open_folder(Path(self.out_dir))
         except Exception as e:
@@ -1374,6 +1488,7 @@ class SongGrabApp(App):
             self.confirmed[raw] = {"bvid": cand.get("bvid", ""), "artist": art,
                                    "title": cand.get("title", "")}
             self._save_confirm()
+            self._record_pick(raw, cand, str(tr.get("bvid") or ""))
             self._flow_ok.append(dict(item, bvid=str(cand.get("bvid", "")),
                                       artist=str(art or "")))
             _next()
@@ -1485,6 +1600,12 @@ class SettingsScreen(Screen):
         # 这些必须在主线程做，之前被误放进 _check_ffmpeg 线程里，进设置页就报错
         self.ids.out_input.text = app.out_dir
         self.ids.play_input.text = str(app.cfg.get("min_play", 1))
+        self.ids.min_dur_input.text = str(app.cfg.get("min_dur", 50))
+        self.ids.max_dur_input.text = str(app.cfg.get("max_dur", 720))
+        self.ids.bili_music_check.active = bool(
+            app.cfg.get("bili_music_override", True))
+        self.ids.update_url_input.text = str(
+            app.cfg.get("update_version_url") or "")
         self.prio = list(app.cfg.get("priority_words") or [])
         self.refresh_prio()
         self.fmt = str(app.cfg.get("output_format") or "m4a").lower()
@@ -1560,6 +1681,14 @@ class SettingsScreen(Screen):
             app.cfg["min_play"] = max(0, int(self.ids.play_input.text.strip() or "1"))
         except ValueError:
             pass
+        for key, wid, default in (("min_dur", self.ids.min_dur_input, 50),
+                                  ("max_dur", self.ids.max_dur_input, 720)):
+            try:
+                app.cfg[key] = max(0, int(wid.text.strip() or str(default)))
+            except ValueError:
+                pass
+        app.cfg["bili_music_override"] = bool(self.ids.bili_music_check.active)
+        app.cfg["update_version_url"] = self.ids.update_url_input.text.strip()
         app.cfg["output_dir"] = app.out_dir
         app.cfg["priority_words"] = list(self.prio)
         app.cfg["output_format"] = self.fmt

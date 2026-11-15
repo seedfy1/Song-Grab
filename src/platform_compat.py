@@ -285,3 +285,22 @@ def open_folder(folder: Path, select_file: Path | None = None) -> tuple[bool, st
         except Exception:
             continue
     return False, f"无法打开目录（路径：{folder}）"
+
+
+def open_url(url: str) -> tuple[bool, str]:
+    """用系统浏览器打开链接（Android 走 Intent，桌面走 webbrowser）。"""
+    url = str(url or "").strip()
+    if not url:
+        return False, "空链接"
+    if not IS_ANDROID:
+        try:
+            import webbrowser
+            ok = webbrowser.open(url)
+            return (True, f"已打开 {url}") if ok else (False, f"无法打开 {url}")
+        except Exception as e:
+            return False, f"打开失败：{e}"
+    try:
+        _intent_open(url)
+        return True, "已用浏览器打开"
+    except Exception as e:
+        return False, f"打开失败：{e}"

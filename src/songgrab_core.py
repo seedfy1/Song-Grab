@@ -156,6 +156,7 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     # False = 曲库作者不再覆盖 QQ/Apple/网易云，只在它们都取不到时兜底
     #（对应 TODO 待观察项：曲库给「官方原唱」与实际要的发行版本常不是同一人）。
     "bili_music_override": True,
+    "update_version_url": "",    # 自定义更新源（version.json 地址；空 = 官方源）
 }
 
 
@@ -3981,6 +3982,45 @@ def known_bad_active(song: str, bvid: str) -> bool:
         return False
     ts = float(rec.get("ts") or 0)
     return bool(ts) and (time.time() - ts <= _BAD_TTL_DAYS * 86400)
+
+
+def known_bad_put(song: str, bvid: str, reason: str = "") -> bool:
+    """用户否掉的 bvid：记 30 天降权（不硬剔），可撤销。"""
+    song, bvid = (song or "").strip(), (bvid or "").strip()
+    if not song or not bvid:
+        return False
+    data = _hit_read(KNOWN_BAD_FILE, {})
+    data["%s||%s" % (normalize(_song_only(song)), bvid)] = {
+        "song": song, "bvid": bvid, "reason": reason or "",
+        "ts": time.time(), "at": time.strftime("%Y-%m-%d %H:%M:%S"),
+        "revoked": False,
+    }
+    return _hit_write(KNOWN_BAD_FILE, data)
+
+
+def known_bad_undo(song: str, bvid: str) -> bool:
+    """撤销一条 known_bad（误点可恢复）。"""
+    data = _hit_read(KNOWN_BAD_FILE, {})
+    key = "%s||%s" % (normalize(_song_only(song)), (bvid or "").strip())
+    rec = data.get(key)
+    if not isinstance(rec, dict):
+        return False
+    rec["revoked"] = True
+    rec["revoked_at"] = time.strftime("%Y-%m-%d %H:%M:%S")
+    ok = _hit_write(KNOWN_BAD_FILE, data)
+    if ok:
+        metrics_event("known_bad_undo", song=song or "", bvid=bvid or "", undone=True)
+    return ok
+
+
+def record_correction(song: str, old_bvid: str, new_bvid: str, *, tier: str = "",
+                      fail_kind: str = "", kind: str = "repick") -> bool:
+    """记录一次用户纠正动作（事件流水，不写作者结论）。"""
+    return _hit_append(CORRECTIONS_FILE, {
+        "ts": time.time(), "at": time.strftime("%Y-%m-%d %H:%M:%S"),
+        "song": song or "", "old_bvid": old_bvid or "", "new_bvid": new_bvid or "",
+        "tier": tier or "", "fail_kind": fail_kind or "", "kind": kind,
+    })
 
 
 def metrics_event(kind: str, **fields: Any) -> bool:

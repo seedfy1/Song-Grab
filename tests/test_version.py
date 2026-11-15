@@ -9,7 +9,8 @@ from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[1]
 APP_MAIN = REPO / "app_main.py"
-WANTED = {"_ver_key", "_fetch_seed", "check_and_update"}
+WANTED = {"_ver_key", "_base_dir", "_seed_urls", "_fetch_seed",
+          "check_and_update"}
 
 
 def _updater_ns() -> dict:
@@ -79,7 +80,7 @@ def test_check_and_update_applies_semver_over_timestamp(tmp_path):
     ns["_http_get"] = lambda url, timeout: json.dumps(
         {"build": "1.0.0", "note": "ok"}
     ).encode()
-    ns["_fetch_seed"] = lambda want="": _seed_bytes("1.0.0")
+    ns["_fetch_seed"] = lambda want="", urls=None: _seed_bytes("1.0.0")
 
     ok, note = ns["check_and_update"](code)
     assert ok is True and note == "ok"
@@ -97,9 +98,45 @@ def test_check_and_update_rejects_mismatched_seed(tmp_path):
     code.mkdir()
     (code / ".version").write_text("1.0.0", encoding="utf-8")
     ns["_http_get"] = lambda url, timeout: json.dumps({"build": "1.0.1"}).encode()
-    ns["_fetch_seed"] = lambda want="": _seed_bytes("1.0.0")
+    ns["_fetch_seed"] = lambda want="", urls=None: _seed_bytes("1.0.0")
 
     ok, note = ns["check_and_update"](code)
     assert ok is False and "不一致" in note
     assert (code / ".version").read_text(encoding="utf-8").strip() == "1.0.0"
     assert not (code / "app_main.py").exists(), "校验失败时不能写入任何文件"
+
+def test_seed_urls_derive_from_version_url():
+    ns = _updater_ns()
+    urls = ns["_seed_urls"]("https://mirror.example/sg/version.json")
+    assert urls == ["https://mirror.example/sg/assets/seed.zip"]
+    # version.json 里显式给了 seed 就优先用它
+    urls = ns["_seed_urls"]("https://mirror.example/sg/version.json",
+                            {"seed": "https://cdn.example/seed.zip"})
+    assert urls == ["https://cdn.example/seed.zip"]
+
+
+def test_custom_update_source_is_used(tmp_path):
+    import types
+    ns = _updater_ns()
+    code = tmp_path / "code"
+    code.mkdir()
+    (code / ".version").write_text("1.0.0", encoding="utf-8")
+    seen = {}
+
+    def fake_get(url, timeout):
+        seen["version_url"] = url
+        return json.dumps({"build": "1.0.1"}).encode()
+
+    def fake_seed(want="", urls=None):
+        seen["seed_urls"] = list(urls or [])
+        return _seed_bytes("1.0.1")
+
+    ns["_http_get"] = fake_get
+    ns["_fetch_seed"] = fake_seed
+    ns["core"] = types.SimpleNamespace(
+        load_settings=lambda: {"update_version_url": "https://mirror.example/sg/version.json"})
+
+    ok, _ = ns["check_and_update"](code)
+    assert ok is True
+    assert seen["version_url"] == "https://mirror.example/sg/version.json"
+    assert seen["seed_urls"] == ["https://mirror.example/sg/assets/seed.zip"]
