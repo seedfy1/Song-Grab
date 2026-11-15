@@ -397,6 +397,16 @@
                 on_release: root.set_fmt('mp4')
 
         Label:
+            text: 'mp4 仅在输入 BV 号 / 视频链接时生效，歌名搜索会按音频下载'
+            font_name: app.font_name
+            font_size: sp(11)
+            color: 0.62, 0.64, 0.72, 1
+            size_hint_y: None
+            height: dp(20)
+            halign: 'left'
+            text_size: self.width, None
+
+        Label:
             text: '优先级词条（越靠上越优先，支持正则）'
             font_name: app.font_name
             font_size: sp(13)

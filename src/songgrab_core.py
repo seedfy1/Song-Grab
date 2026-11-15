@@ -4095,6 +4095,7 @@ def describe_song(line: str, cfg: dict[str, Any], say=None,
         if _rec and str(_rec.get("bvid") or "") == forced_bv:
             _kg_hit = _rec
     # 直链：行里出现 B 站链接 / BV 号 / av 号时，不搜索、不选片
+    fmt_fallback = False     # mp4 被降级为音频时，让界面提示原因
     vref = video_ref(str(line))
     if forced_bv:
         # 手机端：bvid_override 允许带 ?p=N（多P 视频里用户选中的那一集）
@@ -4122,6 +4123,7 @@ def describe_song(line: str, cfg: dict[str, Any], say=None,
     # 所以 mp4 与普通歌名一样回落 m4a（mp4 只对真正的直链生效）。
     if (vref is None or forced_bv) and fmt == "mp4":
         fmt = "m4a"          # mp4 只对直链生效，普通歌名仍然下音频
+        fmt_fallback = True  # 让界面明确告诉用户「为什么下的是音频」
 
     artists = load_artists()
     artist = artist_hint or artists.get(song, "").strip()
@@ -4456,6 +4458,8 @@ def describe_song(line: str, cfg: dict[str, Any], say=None,
     })
     if pending:
         res["reason"] += "；演唱者未查到（Unknown）"
+    if fmt_fallback:
+        res["reason"] += "；mp4 需 BV 号或视频链接，已按音频下载"
     return res
 
 
