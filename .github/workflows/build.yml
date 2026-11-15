@@ -38,8 +38,10 @@ jobs:
           rm -f assets/seed.zip
           # 注意：assets/fonts 要一起打进去，热更后 code/assets/fonts/ 才有字体
           # 本地的 seed.zip 用 tools/pack_seed.sh 重打后提交；这里的产物只进 APK。
-          zip -rq assets/seed.zip app_main.py songgrab.kv src assets/fonts \
+          # version.json 必须打进去：热更校验靠包内 build 判新旧，缺了会被判为旧包
+          zip -rq assets/seed.zip app_main.py songgrab.kv version.json src assets/fonts \
               -x "*/__pycache__/*" "*.pyc"
+          unzip -l assets/seed.zip | grep -q "version.json" || { echo "seed 缺 version.json"; exit 1; }
           echo "seed.zip: $(du -h assets/seed.zip | cut -f1)"
           echo "seed.zip sha256: $(sha256sum assets/seed.zip | cut -d' ' -f1)"
           unzip -l assets/seed.zip | tail -3
