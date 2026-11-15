@@ -95,8 +95,9 @@ def _seed_urls(version_url: str, remote: dict | None = None) -> list[str]:
 def _bust_seed(url: str, want: str) -> str:
     """给 seed 地址加版本参数。
 
-    jsDelivr 按完整 URL 缓存，`@main` 这种浮动引用会持续返回旧包；
-    带上 `?v=<build>` 后每个版本是独立 URL，不会读到上一版的缓存。
+    注意：实测 jsDelivr **连 query string 一起忽略**，`?v=` 并不能换到新缓存；
+    真正可靠的是 version.json 里 `seed` 指向的不可变 tag 地址
+    （`@v1.0.1`），这里加参数只是给 raw 之类会看 query 的源一点区分度。
     """
     if not want:
         return url
@@ -108,8 +109,10 @@ def _fetch_seed(want: str = "", urls: list[str] | None = None) -> bytes | None:
 
     实测 raw.githubusercontent.com 偶尔返回 HTTP 200 但内容被截断
     （8937B vs 32971B），所以必须校验 zip 结构，不能只看长度。
-    另：CDN 可能缓存旧 seed 而 version.json 已是新版，所以只要包内
-    带了 version.json，就必须与 want 一致，否则换源/重试。
+    另：CDN 可能缓存旧 seed 而 version.json 已是新版，所以 want 非空时
+    包内**必须**有 version.json 且 build 与 want 完全一致，否则换源/重试。
+    1.0.0 起所有正式包都带 version.json；没有的只可能是旧缓存包，
+    宁可这次不更新，也不能把旧代码当新版覆盖上去。
     """
     import io
     import zipfile
@@ -128,13 +131,15 @@ def _fetch_seed(want: str = "", urls: list[str] | None = None) -> bytes | None:
                         continue
                     if z.testzip() is not None:
                         continue
-                    if want and "version.json" in names:
+                    if want:
+                        if "version.json" not in names:
+                            continue
                         try:
                             inner = json.loads(z.read("version.json").decode("utf-8", "ignore"))
                             inner_v = str(inner.get("build") or "").strip() if isinstance(inner, dict) else ""
                         except Exception:
                             inner_v = ""
-                        if inner_v and inner_v != want:
+                        if inner_v != want:
                             continue
                 return data
             except Exception:
@@ -175,7 +180,14 @@ def check_and_update(code_dir: Path = CODE_DIR) -> tuple[bool, str]:
     if local and _ver_key(rv) <= _ver_key(local):
         return False, ""
 
-    seed_urls = _seed_urls(custom, remote) if custom else list(UPDATE_SEED_URLS)
+    # 默认源优先用 version.json 里的 `seed`（不可变 tag 地址，绕开 @main 缓存）；
+    # 没写才退回内置的 jsDelivr/raw 列表。自定义源仍按同目录推导。
+    if custom:
+        seed_urls = _seed_urls(custom, remote)
+    elif isinstance(remote.get("seed"), str) and remote["seed"].strip():
+        seed_urls = [remote["seed"].strip()]
+    else:
+        seed_urls = list(UPDATE_SEED_URLS)
     data = _fetch_seed(rv, [_bust_seed(u, rv) for u in seed_urls])
     if not data:
         return False, "下载更新包失败（可稍后重试）"

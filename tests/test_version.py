@@ -64,12 +64,17 @@ def test_fetch_seed_rejects_mismatched_version():
     assert ns["_fetch_seed"]("1.0.0") == good
 
 
-def test_fetch_seed_accepts_legacy_pack_without_version():
-    """过渡期：还没打进 version.json 的旧 seed 仍要能更新。"""
+def test_fetch_seed_rejects_pack_without_version():
+    """没有 version.json 的只可能是旧缓存包，必须拒绝。
+
+    实测 jsDelivr 会忽略 query string 持续返回 0025 的旧包（18 个成员、
+    没有 version.json）；这种包一旦被接受，就会把旧代码覆盖上来却写上新版本号，
+    之后永远显示「已是最新」。
+    """
     ns = _updater_ns()
     legacy = _seed_bytes("", with_version=False)
     ns["_http_get"] = lambda url, timeout: legacy
-    assert ns["_fetch_seed"]("1.0.0") == legacy
+    assert ns["_fetch_seed"]("1.0.0") is None
 
 
 def test_check_and_update_applies_semver_over_timestamp(tmp_path):
@@ -148,3 +153,32 @@ def test_bust_seed_appends_version():
     assert bust("https://x/seed.zip", "1.0.1") == "https://x/seed.zip?v=1.0.1"
     assert bust("https://x/seed.zip?a=1", "1.0.1") == "https://x/seed.zip?a=1&v=1.0.1"
     assert bust("https://x/seed.zip", "") == "https://x/seed.zip"
+
+
+def test_default_seed_uses_remote_seed_field(tmp_path):
+    """默认源要优先用 version.json 里的 seed（不可变 tag 地址）。"""
+    ns = _updater_ns()
+    code = tmp_path / "code"
+    code.mkdir()
+    (code / ".version").write_text("1.0.0", encoding="utf-8")
+    seen = {}
+
+    def fake_get(url, timeout):
+        seen["version_url"] = url
+        return json.dumps({
+            "build": "1.0.1",
+            "seed": "https://cdn.example/gh/x/y@v1.0.1/assets/seed.zip",
+        }).encode()
+
+    def fake_seed(want="", urls=None):
+        seen["seed_urls"] = list(urls or [])
+        return _seed_bytes("1.0.1")
+
+    ns["_http_get"] = fake_get
+    ns["_fetch_seed"] = fake_seed
+
+    ok, _ = ns["check_and_update"](code)
+    assert ok is True
+    assert seen["version_url"] == "https://example.invalid/version.json"
+    assert seen["seed_urls"] == [
+        "https://cdn.example/gh/x/y@v1.0.1/assets/seed.zip?v=1.0.1"]
