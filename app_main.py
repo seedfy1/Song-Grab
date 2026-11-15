@@ -59,11 +59,28 @@ def _http_get(url: str, timeout: int = 15) -> bytes:
         return r.read()
 
 
-def _fetch_seed() -> bytes | None:
+def _ver_key(v: str) -> tuple:
+    """版本号 → 可比较的整数元组。
+
+    新格式 X.Y.Z 按数值比较（1.0.9 < 1.0.10）；旧的 YYYYMMDD-HHMM
+    时间戳一律当 0.0.0，保证语义化版本能覆盖老设备上的历史版本。
+    """
+    parts = str(v or "").strip().split(".")
+    if len(parts) != 3:
+        return (0, 0, 0)
+    try:
+        return tuple(int(p) for p in parts)
+    except ValueError:
+        return (0, 0, 0)
+
+
+def _fetch_seed(want: str = "") -> bytes | None:
     """下载并校验源码包。
 
     实测 raw.githubusercontent.com 偶尔返回 HTTP 200 但内容被截断
     （8937B vs 32971B），所以必须校验 zip 结构，不能只看长度。
+    另：CDN 可能缓存旧 seed 而 version.json 已是新版，所以只要包内
+    带了 version.json，就必须与 want 一致，否则换源/重试。
     """
     import io
     import zipfile
@@ -82,6 +99,14 @@ def _fetch_seed() -> bytes | None:
                         continue
                     if z.testzip() is not None:
                         continue
+                    if want and "version.json" in names:
+                        try:
+                            inner = json.loads(z.read("version.json").decode("utf-8", "ignore"))
+                            inner_v = str(inner.get("build") or "").strip() if isinstance(inner, dict) else ""
+                        except Exception:
+                            inner_v = ""
+                        if inner_v and inner_v != want:
+                            continue
                 return data
             except Exception:
                 continue
@@ -111,12 +136,12 @@ def check_and_update(code_dir: Path = CODE_DIR) -> tuple[bool, str]:
             local = vf.read_text(encoding="utf-8").strip()
     except Exception:
         pass
-    # 版本号形如 YYYYMMDD-HHMM，字典序即时间序：只接受更新的包，
-    # 避免 CDN 缓存了旧 version.json / 旧 seed.zip 时把本地代码回滚。
-    if rv == local or (local and rv <= local):
+    # 1.0.0 起用语义化版本（X.Y.Z 按数值比较，1.0.9 < 1.0.10）；
+    # 旧设备的 YYYYMMDD-HHMM 时间戳按 0.0.0 处理，只会被新版本覆盖。
+    if local and _ver_key(rv) <= _ver_key(local):
         return False, ""
 
-    data = _fetch_seed()
+    data = _fetch_seed(rv)
     if not data:
         return False, "下载更新包失败（可稍后重试）"
     # 先解到临时目录，校验通过再替换，避免半个包把现有代码写坏
@@ -131,6 +156,13 @@ def check_and_update(code_dir: Path = CODE_DIR) -> tuple[bool, str]:
             z.extractall(tmp)
         if not (tmp / "app_main.py").exists():
             raise RuntimeError("更新包缺少 app_main.py")
+        try:
+            packed = json.loads((tmp / "version.json").read_text(encoding="utf-8"))
+            packed_v = str(packed.get("build") or "").strip() if isinstance(packed, dict) else ""
+        except Exception:
+            packed_v = ""
+        if packed_v and packed_v != rv:
+            raise RuntimeError(f"更新包版本 {packed_v} 与远端 {rv} 不一致")
         code_dir.mkdir(parents=True, exist_ok=True)
         for item in tmp.iterdir():
             dest = code_dir / item.name
