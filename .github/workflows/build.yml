@@ -54,7 +54,7 @@ jobs:
       # release 构建 + 固定 keystore 签名：保证每次产出的 APK 签名一致，可覆盖升级
       - name: 构建 APK（release 签名）
         env:
-          P4A_RELEASE_KEYSTORE: /home/user/keys/songgrab.p12
+          P4A_RELEASE_KEYSTORE: /tmp/keys/songgrab.p12
           P4A_RELEASE_KEYALIAS: ${{ secrets.SONGRAB_KEYALIAS }}
           P4A_RELEASE_KEYSTORE_PASSWD: ${{ secrets.SONGRAB_KEYSTORE_PASS }}
           P4A_RELEASE_KEYALIAS_PASSWD: ${{ secrets.SONGRAB_KEYALIAS_PASS }}
@@ -62,7 +62,7 @@ jobs:
           docker run --rm --user root \
             -v "$GITHUB_WORKSPACE":/home/user/hostcwd \
             -v "$HOME/.buildozer-cache":/root/.buildozer \
-            -v "$HOME/keys":/home/user/keys:ro \
+            -v "$HOME/keys":/tmp/keys:ro \
             -e P4A_RELEASE_KEYSTORE -e P4A_RELEASE_KEYALIAS \
             -e P4A_RELEASE_KEYSTORE_PASSWD -e P4A_RELEASE_KEYALIAS_PASSWD \
             kivy/buildozer:latest android release
