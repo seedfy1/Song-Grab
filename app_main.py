@@ -257,16 +257,29 @@ FONT = register_cjk()
 
 # ------------------------------------------------------------------ 权限
 def request_basic_permissions() -> None:
-    """Android 运行时权限（联网 / 读写外部存储）。"""
+    """Android 运行时权限（联网 / 读写外部存储 / 通知）。
+
+    Android 13(API 33) 起 POST_NOTIFICATIONS 是运行时权限，不申请的话
+    plyer 的「下载完成」通知不会弹（manifest 里早已声明，只差这一步申请）。
+    老版本 p4a 的 Permission 枚举里没有该常量，getattr 取不到就跳过。
+    """
     if not pc.IS_ANDROID:
         return
     try:
         from android.permissions import Permission, request_permissions  # type: ignore
-        request_permissions([
+        base = [
             Permission.INTERNET,
             Permission.READ_EXTERNAL_STORAGE,
             Permission.WRITE_EXTERNAL_STORAGE,
-        ])
+        ]
+        notify = getattr(Permission, "POST_NOTIFICATIONS", None)
+        if notify is not None:
+            try:
+                request_permissions(base + [notify])
+                return
+            except Exception:
+                pass      # 个别 p4a 版本对未编译进清单的权限会抛错：退回基础三项
+        request_permissions(base)
     except Exception:
         pass
 
@@ -387,6 +400,8 @@ class SongGrabApp(App):
     # True = 未确认的曲目不自动下载（冻结文档 §8.5「跳过未确定项」）
     require_confirm = BooleanProperty(True)
     _cmd_id: str = ""
+    # 上一次写进 sg-status.json 的内容签名（去重用，None = 还没写过）
+    _status_sig: str | None = None
     results: dict = {}
 
     def build(self):
@@ -523,16 +538,19 @@ class SongGrabApp(App):
             pass
 
     # -------------------------------------------------------------- 命令通道
-    def _write_json(self, path: Path, obj) -> None:
+    def _write_json(self, path: Path, obj) -> bool:
+        """原子写 JSON；返回是否真的写成（调用方靠它决定要不要记签名）。"""
         try:
             tmp = path.with_suffix(".tmp")
             tmp.write_text(json.dumps(obj, ensure_ascii=False, indent=1), encoding="utf-8")
             tmp.replace(path)
+            return True
         except Exception:
             try:
                 path.write_text(json.dumps(obj, ensure_ascii=False), encoding="utf-8")
+                return True
             except Exception:
-                pass
+                return False
 
     def _watch_cmd(self, _dt):
         try:
@@ -592,14 +610,24 @@ class SongGrabApp(App):
                 pass
 
     def _write_status(self, _dt=None):
-        self._write_json(STATUS_FILE, {
+        """2 秒一次把状态写到 sg-status.json（给容器侧/脚本看）。
+
+        以前无条件全量写：空闲时也在持续写 /sdcard（FUSE + 闪存磨损）。
+        现在按内容签名去重；文件被外部删掉时（exists 为假）会补写一次。
+        """
+        obj = {
             "running": bool(self.running),
             "progress": round(float(self.progress), 3),
             "status": self.status_text,
             "out": self.out_dir,
             "cookie": self.cookie_hint,
             "results": list(self.results.values()),
-        })
+        }
+        sig = json.dumps(obj, ensure_ascii=False, sort_keys=True, default=str)
+        if sig == self._status_sig and STATUS_FILE.exists():
+            return
+        if self._write_json(STATUS_FILE, obj):
+            self._status_sig = sig
 
     # -------------------------------------------------------------- 动作
     def pick_playlist(self):
@@ -1532,7 +1560,7 @@ class PromptView(ModalView):
 
 
 class QRLoginView(ModalView):
-    """B 站扫码登录：二维码走在线接口渲染，轮询拿到 cookie 后落盘。"""
+    """B 站扫码登录：二维码本机生成（不走任何在线图片接口），轮询拿到 cookie 后落盘。"""
 
     def __init__(self, on_done, **kw):
         super().__init__(size_hint=(0.92, None), height=dp(500), auto_dismiss=False, **kw)
@@ -1592,8 +1620,16 @@ class QRLoginView(ModalView):
             png = core.qr_png(url, side=420)
             if not png.startswith(b"\x89PNG"):
                 raise RuntimeError("二维码编码失败")
-            path = pc.data_dir() / f"qr-{int(time.time())}.png"
-            path.parent.mkdir(parents=True, exist_ok=True)
+            d = pc.data_dir()
+            d.mkdir(parents=True, exist_ok=True)
+            # 每刷新一次就多一张 qr-*.png，以前只写不删会越积越多。
+            # 新图已经生成好、且 img.source 已被清空，这时删旧的不会闪白板。
+            for old in d.glob("qr-*.png"):
+                try:
+                    old.unlink()
+                except OSError:
+                    pass
+            path = d / f"qr-{int(time.time())}.png"
             path.write_bytes(png)
         except Exception as e:
             msg = f"{type(e).__name__}: {e}"
@@ -1602,7 +1638,7 @@ class QRLoginView(ModalView):
         Clock.schedule_once(lambda dt, _p=str(path): self._qr_ready(_p), 0)
 
     def _qr_fail(self, msg: str):
-        self.status.text = f"二维码下载失败：{msg}"
+        self.status.text = f"二维码生成失败：{msg}"
         self.status.color = (0.95, 0.45, 0.45, 1)
 
     def _qr_ready(self, path: str):

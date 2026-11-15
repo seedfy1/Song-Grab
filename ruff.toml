@@ -1,0 +1,11 @@
+# ruff 配置：lint 门禁与 CI 保持一致
+target-version = "py312"
+
+[lint]
+select = ["F", "E9", "B"]
+
+[lint.per-file-ignores]
+# vendor 进来的 qrcode 编码子集（BSD-2，src/qrgen/），不参与本项目的 lint 门禁：
+#   F821 PyPNGImage —— 可选 PyPNG 后端，本项目不用（走本机 1-bit PNG 输出）
+#   B905 zip(strict=) —— 上游写法，改它属于无意义 diff
+"src/qrgen/*" = ["F821", "B905"]

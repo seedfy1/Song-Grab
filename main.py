@@ -89,8 +89,7 @@ def _copy_builtin_to_live() -> bool:
 
 
 def _load(path: Path):
-    sys.path.insert(0, str(path / "src"))
-    sys.path.insert(0, str(path))
+    """按显式路径加载代码；sys.path 由调用方管，这里不再污染全局。"""
     spec = importlib.util.spec_from_file_location("sg_app", path / "app_main.py")
     mod = importlib.util.module_from_spec(spec)
     sys.modules["sg_app"] = mod
@@ -109,13 +108,24 @@ def main() -> None:
         if not _seed_from_zip():
             _copy_builtin_to_live()
     if (LIVE / "app_main.py").exists():
+        saved_path = list(sys.path)
         try:
+            sys.path.insert(0, str(LIVE / "src"))
+            sys.path.insert(0, str(LIVE))
             mod = _load(LIVE)
             _write_boot_log(f"加载外部代码：{LIVE}")
             mod.SongGrabApp().run()
             return
         except Exception:
             _write_boot_log("外部代码失败，回退内置：\n" + traceback.format_exc())
+            # 关键：外部代码留下的 sys.path / sys.modules 必须清干净，
+            # 否则下面的 `import app_main` 会再次命中同一个坏文件（等于没回退）。
+            sys.path[:] = saved_path
+            live_prefix = str(LIVE)
+            for _name, _mod in list(sys.modules.items()):
+                _f = getattr(_mod, "__file__", None) or ""
+                if _name == "sg_app" or _f.startswith(live_prefix):
+                    sys.modules.pop(_name, None)
     # 2) 回退内置
     _write_boot_log("使用内置代码")
     import app_main as builtin  # noqa: E402

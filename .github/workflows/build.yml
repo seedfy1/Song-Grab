@@ -25,14 +25,23 @@ jobs:
           mkdir -p ~/.buildozer-cache
           chmod -R 777 ~/.buildozer-cache
 
+      - name: 单元测试 + lint
+        run: |
+          python3 -m pip install --quiet --upgrade pip
+          python3 -m pip install --quiet pytest ruff
+          python3 -m pytest tests -q
+          python3 -m ruff check src app_main.py main.py tests
+
       # 用 Kivy 官方维护的镜像：buildozer + p4a + SDK/NDK 版本组合已测试过
       - name: 生成源码种子包（代码外置用）
         run: |
           rm -f assets/seed.zip
           # 注意：assets/fonts 要一起打进去，热更后 code/assets/fonts/ 才有字体
+          # 本地的 seed.zip 用 tools/pack_seed.sh 重打后提交；这里的产物只进 APK。
           zip -rq assets/seed.zip app_main.py songgrab.kv src assets/fonts \
               -x "*/__pycache__/*" "*.pyc"
           echo "seed.zip: $(du -h assets/seed.zip | cut -f1)"
+          echo "seed.zip sha256: $(sha256sum assets/seed.zip | cut -d' ' -f1)"
           unzip -l assets/seed.zip | tail -3
 
       - name: 构建 APK

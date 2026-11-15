@@ -890,11 +890,13 @@ def _png_chunk(tag: bytes, data: bytes) -> bytes:
             + struct.pack(">I", zlib.crc32(body) & 0xFFFFFFFF))
 
 
-def qr_png(data: str, side: int = 420, quiet: int = 2) -> bytes:
+def qr_png(data: str, side: int = 420, quiet: int = 4) -> bytes:
     """把文本编成二维码 PNG，纯标准库（内置 qrcode 子集 + zlib）。
 
     以前是让 Kivy 去 api.qrserver.com 拉图，Android 上既缺 CA、第三方服务
     还时不时回 gzip 或错误页；本机生成就彻底没有网络这回事。
+
+    quiet 默认 4：QR 规范要求的静区宽度（2 时 B 站 App 偶尔扫不出来）。
     """
     import struct
     import zlib
@@ -1060,12 +1062,20 @@ _CACHE_LIMIT_MUSIC = 512
 _BAD_HIT_SEEN: set[tuple[str, str]] = set()
 
 
+_CACHE_LOCK = threading.Lock()
+
+
 def _cache_put(cache: dict, key: Any, value: Any, limit: int) -> None:
-    """写入并保持不超过 limit 条；dict 保插入序，超了淘汰最早写入的。"""
-    cache[key] = value
-    if len(cache) > limit:
-        for k in list(cache)[: len(cache) - limit]:
-            cache.pop(k, None)
+    """写入并保持不超过 limit 条；dict 保插入序，超了淘汰最早写入的。
+
+    加了锁：2 路并发下「写入」与「淘汰」交错时，可能刚 put 的新项被另一路
+    按过期的长度算成"最早写入"而 pop 掉（缓存丢失，表现为结果忽有忽无）。
+    """
+    with _CACHE_LOCK:
+        cache[key] = value
+        if len(cache) > limit:
+            for k in list(cache)[: len(cache) - limit]:
+                cache.pop(k, None)
 
 # ---- L52 搜索并发：默认 2 路（用户要求全链路 2 路并行，降低风控概率），被限流自动降 1 路 ----
 # 每条「路」仍保持 _MIN_INTERVAL 的间隔，只是允许 N 条路同时各发各的。
@@ -2215,7 +2225,21 @@ def _pick_fast_url(urls: list[str]) -> tuple[str, int]:
     return best_url, total
 
 
+class _RangeIgnored(RuntimeError):
+    """服务器无视 Range 回了 200 全量。重试没有意义，直接判错。"""
+
+
 def _fetch_chunk(url: str, start: int, end: int, tries: int = 3) -> bytes:
+    """按 Range 拉一段，返回长度必须恰为 end-start+1。
+
+    以前直接 `r.read()`：CDN 节点一旦无视 Range 回 200 整首，每个分块线程都会
+    把整个音频读进内存，而且拼出来的文件大小对不上（只有最后才报错）。
+    现在三层校验：状态码（start>0 却回 200 判错）、限长读、长度精确比对。
+    """
+    want = end - start + 1
+    if want <= 0:
+        raise ValueError(f"非法 Range：{start}-{end}")
+    last_err: Exception | None = None
     for i in range(tries):
         try:
             req = urllib.request.Request(url, headers={
@@ -2223,12 +2247,28 @@ def _fetch_chunk(url: str, start: int, end: int, tries: int = 3) -> bytes:
                 "Range": f"bytes={start}-{end}",
             })
             with _stream_opener().open(req, timeout=30) as r:
-                return r.read()
-        except Exception:
+                status = getattr(r, "status", None)
+                if status is None:
+                    status = r.getcode()
+                if start > 0 and status == 200:
+                    raise _RangeIgnored(
+                        f"服务器忽略 Range（返回 HTTP 200，本段从 {start} 开始），拒绝全量读取")
+                # 多读 1 字节：用来区分「恰好读满」与「服务器在灌全量」
+                body = r.read(want + 1)
+                if len(body) > want:
+                    raise _RangeIgnored(
+                        f"返回超长：{len(body)} > {want} 字节，Range 未被尊重")
+                if len(body) != want:
+                    raise IOError(f"分块不完整：{len(body)}/{want} 字节")
+                return body
+        except _RangeIgnored:
+            raise                      # 确定性错误，重试只会再下几遍整首
+        except Exception as e:
+            last_err = e
             if i == tries - 1:
                 raise
             time.sleep(0.8 * (i + 1))
-    return b""
+    raise last_err or IOError(f"分块下载失败：{start}-{end}")
 
 
 def _download_dash(bvid: str, dst: Path, progress=None, cid: int = 0,
@@ -2246,28 +2286,53 @@ def _download_dash(bvid: str, dst: Path, progress=None, cid: int = 0,
 
     n = max(1, min(_DL_THREADS, int(total / (512 * 1024)) or 1))
     step = (total + n - 1) // n
-    parts: list[bytes | None] = [None] * n
     done = [0]
+    errs: list[BaseException | None] = [None] * n
     lock = threading.Lock()
 
-    def work(i: int) -> None:
-        s0 = i * step
-        e0 = min(s0 + step - 1, total - 1)
-        parts[i] = _fetch_chunk(url, s0, e0)
-        with lock:
-            done[0] += len(parts[i] or b"")
-            say("dl", f"{done[0] * 100 // total}%")
-
-    ths = [threading.Thread(target=work, args=(i,), daemon=True) for i in range(n)]
-    for t in ths:
-        t.start()
-    for t in ths:
-        t.join()
-    _check(cancel)
-    if any(p is None for p in parts):
-        raise RuntimeError("有分块没下完")
     tmp = dst.with_suffix(".part")
-    tmp.write_bytes(b"".join(p or b"" for p in parts))
+    tmp.parent.mkdir(parents=True, exist_ok=True)
+    # 预分配 + 每段 seek 落盘。以前是收集所有分块再 b"".join() 一次性写，
+    # Hi-Res 大文件时内存峰值翻倍（分块总和 + 拼好的整份）。
+    fh = open(tmp, "wb")
+    try:
+        fh.truncate(total)
+
+        def work(i: int) -> None:
+            s0 = i * step
+            e0 = min(s0 + step - 1, total - 1)
+            want = e0 - s0 + 1
+            try:
+                chunk = _fetch_chunk(url, s0, e0)
+                if len(chunk) != want:
+                    raise RuntimeError(f"第 {i + 1}/{n} 块长度不符：{len(chunk)} != {want}")
+                with lock:
+                    fh.seek(s0)
+                    fh.write(chunk)
+                    done[0] += len(chunk)
+                    say("dl", f"{done[0] * 100 // total}%")
+            except BaseException as e:   # noqa: BLE001 —— 线程里的错必须带回主线程
+                errs[i] = e
+
+        ths = [threading.Thread(target=work, args=(i,), daemon=True) for i in range(n)]
+        for t in ths:
+            t.start()
+        for t in ths:
+            t.join()
+        _check(cancel)
+        if any(e is not None for e in errs):
+            raise next(e for e in errs if e is not None)
+        fh.flush()
+        try:
+            os.fsync(fh.fileno())      # 落盘后再改名，避免断电留下「大小对但内容空」的块
+        except OSError:
+            pass
+    except BaseException:
+        fh.close()
+        tmp.unlink(missing_ok=True)
+        raise
+    fh.close()
+
     got = tmp.stat().st_size
     if got != total:
         tmp.unlink(missing_ok=True)
