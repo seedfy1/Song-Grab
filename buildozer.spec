@@ -26,6 +26,8 @@ android.api = 34
 android.minapi = 28
 android.ndk = 25b
 android.archs = arm64-v8a
+# release 构建产出 apk（buildozer 默认 release 产物是 aab）
+android.release_artifact = apk
 android.accept_sdk_license = True
 android.allow_backup = True
 # 启动画面（Python 起来之前显示，覆盖最长的等待期）
