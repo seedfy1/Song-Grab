@@ -1,0 +1,28 @@
+name: Gen Signing Key
+
+on:
+  workflow_dispatch:
+
+jobs:
+  genkey:
+    runs-on: ubuntu-22.04
+    steps:
+      - name: 生成 keystore
+        run: |
+          set -euo pipefail
+          PASS="$(head -c 24 /dev/urandom | base64 | tr -dc 'A-Za-z0-9')"
+          keytool -genkeypair -v \
+            -keystore songgrab.p12 -storetype PKCS12 \
+            -alias songgrab -keyalg RSA -keysize 2048 -validity 10950 \
+            -storepass "$PASS" -keypass "$PASS" \
+            -dname "CN=SongGrab, O=FishMusic, C=CN"
+          base64 -w0 songgrab.p12 > songgrab.p12.b64
+          echo "$PASS" > pass.txt
+          ls -l songgrab.p12 songgrab.p12.b64 pass.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: songgrab-signing-key
+          path: |
+            songgrab.p12.b64
+            pass.txt
+          retention-days: 1
