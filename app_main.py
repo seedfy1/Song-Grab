@@ -470,7 +470,7 @@ class SongGrabApp(App):
         """更新完成后给个不容易漏掉的提示（状态栏会被后续事件覆盖）。"""
         self.status_text = f"代码已更新（{note}），重开 App 生效"
         try:
-            PromptView("代码已更新，重开 App 后生效", lambda: None).open()
+            PromptView("代码已更新，重开 App 后生效", lambda *_: None).open()
         except Exception:
             pass
 

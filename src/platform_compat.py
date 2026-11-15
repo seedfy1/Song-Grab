@@ -105,15 +105,28 @@ def _shallow_pems(root: Path, max_depth: int = 3):
         return
 
 
+def cookie_txt() -> Path:
+    """扫码登录/导入之后的 Cookie 落盘位置（必须是 core 与 UI 共用的同一份）。
+
+    FIX(M34)：旧实现有两个落点——core 写 APP_DIR/cookies.txt（热更目录），
+    cookies_hint()/cookies_file() 却只认 data_dir()/cookies.txt，结果扫码
+    提示「已保存 5 条 Cookie」，设置页却仍显示「未导入登录 cookie」，
+    下载也读不到这份 Cookie。统一走应用私有目录。
+    """
+    return data_dir() / "cookies.txt"
+
+
 def cookies_file() -> Path | None:
     """用户导入的 cookies.txt（Android 上放开几个容易访问的位置）。"""
-    candidates = [data_dir() / "cookies.txt"]
+    candidates = [cookie_txt()]
     if IS_ANDROID:
         candidates += [
             Path("/sdcard/Download/cookies.txt"),
             Path("/sdcard/cookies.txt"),
             Path("/storage/emulated/0/Download/cookies.txt"),
             Path("/sdcard/Android/data/org.fishmusic.songgrab/files/cookies.txt"),
+            # 兼容 0025 及更早版本写在热更目录里的那份（读到就会迁回私有目录）
+            Path("/sdcard/Music/SongGrab/code/cookies.txt"),
         ]
     else:
         candidates += [

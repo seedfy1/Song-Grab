@@ -786,8 +786,11 @@ class Card:
         return asdict(self)
 
 
-COOKIE_TXT = APP_DIR / "cookies.txt"
+COOKIE_TXT = _pc.cookie_txt() if hasattr(_pc, "cookie_txt") else APP_DIR / "cookies.txt"
 COOKIE_JSON = APP_DIR / "cookies.json"
+# FIX(M34)：0025 及更早版本把 cookies.txt 写在 APP_DIR（热更目录），
+# 这里保留读取/迁移用途，不再作为新的落点。
+_LEGACY_COOKIE_TXT = APP_DIR / "cookies.txt"
 
 
 def parse_cookie_text(text: str) -> dict[str, str]:
@@ -828,13 +831,19 @@ def parse_cookie_text(text: str) -> dict[str, str]:
 
 def load_cookies() -> dict[str, str]:
     """读取已导入的 Cookie：优先 cookies.txt，其次兼容旧版 cookies.json。"""
-    if COOKIE_TXT.exists():
-        try:
-            pairs = parse_cookie_text(COOKIE_TXT.read_text(encoding="utf-8-sig", errors="ignore"))
-            if pairs:
-                return pairs
-        except Exception:
-            pass
+    for path in (COOKIE_TXT, _LEGACY_COOKIE_TXT):
+        if path.exists():
+            try:
+                pairs = parse_cookie_text(path.read_text(encoding="utf-8-sig", errors="ignore"))
+                if pairs:
+                    if path == _LEGACY_COOKIE_TXT and path != COOKIE_TXT:
+                        # 顺手迁到新落点；失败不影响本次读取
+                        with contextlib.suppress(OSError):
+                            COOKIE_TXT.write_text(path.read_text(encoding="utf-8-sig", errors="ignore"),
+                                                  encoding="utf-8")
+                    return pairs
+            except Exception:
+                pass
     try:
         if COOKIE_JSON.exists():
             data = json.loads(COOKIE_JSON.read_text(encoding="utf-8-sig"))
@@ -856,10 +865,22 @@ def save_cookie_text(text: str) -> tuple[int, bool]:
     lines = ["# Netscape HTTP Cookie File", "# 由肥鱼音乐导入", ""]
     for name, value in pairs.items():
         lines.append(f".bilibili.com\tTRUE\t/\tFALSE\t0\t{name}\t{value}")
+    text = "\n".join(lines) + "\n"
     # FIX(L31): 走 _DISK_LOCK。扫码成功与「导入 Cookie」都会写这个文件，下载线程
     # 同时可能在读它；不加锁时并发写会出现半截文件。
     with _DISK_LOCK:
-        COOKIE_TXT.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        primary = True
+        try:
+            COOKIE_TXT.write_text(text, encoding="utf-8")
+        except OSError:
+            # 私有目录不可写（极少数设备/权限异常）时退回旧落点，别让登录直接失败
+            if _LEGACY_COOKIE_TXT == COOKIE_TXT:
+                raise
+            primary = False
+            _LEGACY_COOKIE_TXT.write_text(text, encoding="utf-8")
+        if primary and _LEGACY_COOKIE_TXT != COOKIE_TXT and _LEGACY_COOKIE_TXT.exists():
+            with contextlib.suppress(OSError):
+                _LEGACY_COOKIE_TXT.unlink()
     return len(pairs), "SESSDATA" in pairs
 
 
