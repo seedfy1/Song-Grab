@@ -9,7 +9,7 @@ from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[1]
 APP_MAIN = REPO / "app_main.py"
-WANTED = {"_ver_key", "_base_dir", "_seed_urls", "_fetch_seed",
+WANTED = {"_ver_key", "_base_dir", "_seed_urls", "_bust_seed", "_fetch_seed",
           "check_and_update"}
 
 
@@ -139,4 +139,12 @@ def test_custom_update_source_is_used(tmp_path):
     ok, _ = ns["check_and_update"](code)
     assert ok is True
     assert seen["version_url"] == "https://mirror.example/sg/version.json"
-    assert seen["seed_urls"] == ["https://mirror.example/sg/assets/seed.zip"]
+    assert seen["seed_urls"] == ["https://mirror.example/sg/assets/seed.zip?v=1.0.1"]
+
+
+def test_bust_seed_appends_version():
+    ns = _updater_ns()
+    bust = ns["_bust_seed"]
+    assert bust("https://x/seed.zip", "1.0.1") == "https://x/seed.zip?v=1.0.1"
+    assert bust("https://x/seed.zip?a=1", "1.0.1") == "https://x/seed.zip?a=1&v=1.0.1"
+    assert bust("https://x/seed.zip", "") == "https://x/seed.zip"

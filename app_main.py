@@ -40,8 +40,10 @@ UPDATE_VERSION_URLS = [
     "https://cdn.jsdelivr.net/gh/seedfy1/Song-Grab@main/version.json",
 ]
 UPDATE_SEED_URLS = [
-    "https://raw.githubusercontent.com/seedfy1/Song-Grab/main/assets/seed.zip",
+    # jsDelivr 放前面：raw 在国内经常只有 20 KB/s，7.7 MB 的包会超时；
+    # 旧缓存问题由下载 URL 带 ?v=<build> 解决（jsDelivr 按完整 URL 缓存）。
     "https://cdn.jsdelivr.net/gh/seedfy1/Song-Grab@main/assets/seed.zip",
+    "https://raw.githubusercontent.com/seedfy1/Song-Grab/main/assets/seed.zip",
 ]
 CODE_DIR = Path("/sdcard/Music/SongGrab/code")
 
@@ -88,6 +90,17 @@ def _seed_urls(version_url: str, remote: dict | None = None) -> list[str]:
     if seed:
         return [seed]
     return [_base_dir(version_url) + "assets/seed.zip"]
+
+
+def _bust_seed(url: str, want: str) -> str:
+    """给 seed 地址加版本参数。
+
+    jsDelivr 按完整 URL 缓存，`@main` 这种浮动引用会持续返回旧包；
+    带上 `?v=<build>` 后每个版本是独立 URL，不会读到上一版的缓存。
+    """
+    if not want:
+        return url
+    return url + ("&" if "?" in url else "?") + "v=" + want
 
 
 def _fetch_seed(want: str = "", urls: list[str] | None = None) -> bytes | None:
@@ -162,7 +175,8 @@ def check_and_update(code_dir: Path = CODE_DIR) -> tuple[bool, str]:
     if local and _ver_key(rv) <= _ver_key(local):
         return False, ""
 
-    data = _fetch_seed(rv, _seed_urls(custom, remote) if custom else None)
+    seed_urls = _seed_urls(custom, remote) if custom else list(UPDATE_SEED_URLS)
+    data = _fetch_seed(rv, [_bust_seed(u, rv) for u in seed_urls])
     if not data:
         return False, "下载更新包失败（可稍后重试）"
     # 先解到临时目录，校验通过再替换，避免半个包把现有代码写坏
