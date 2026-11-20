@@ -326,6 +326,7 @@ RES_FILE = WORK_DIR / "sg-result.json"
 STATUS_FILE = WORK_DIR / "sg-status.json"
 sys.path.insert(0, str(HERE / "src"))
 
+import app_theme as theme_mod  # noqa: E402
 import controller as ctl  # noqa: E402
 import platform_compat as pc  # noqa: E402
 import songgrab_core as core  # noqa: E402
@@ -441,12 +442,20 @@ class ResultRow(BoxLayout):
     style = StringProperty("wait")   # wait / ok / fail / skip / confirm
 
     def color_for(self, style: str) -> list[float]:
+        theme = getattr(App.get_running_app(), "theme", None)
+        if theme is None:   # 冒烟/单测里没有 App 时的兜底
+            return {
+                "ok": [0.24, 0.78, 0.45, 1],
+                "fail": [0.95, 0.35, 0.35, 1],
+                "skip": [0.6, 0.6, 0.65, 1],
+                "confirm": [0.98, 0.76, 0.25, 1],
+            }.get(style, [0.85, 0.85, 0.9, 1])
         return {
-            "ok": [0.24, 0.78, 0.45, 1],
-            "fail": [0.95, 0.35, 0.35, 1],
-            "skip": [0.6, 0.6, 0.65, 1],
-            "confirm": [0.98, 0.76, 0.25, 1],   # 待确认：琥珀色
-        }.get(style, [0.85, 0.85, 0.9, 1])
+            "ok": theme.status_ok,
+            "fail": theme.status_fail,
+            "skip": theme.status_skip,
+            "confirm": theme.status_confirm,   # 待确认：琥珀色
+        }.get(style, theme.status_wait)
 
     def on_touch_down(self, touch):
         if self.collide_point(*touch.pos):
@@ -484,6 +493,8 @@ class ResultRow(BoxLayout):
 
 
 class SongGrabApp(App):
+    # kv 里所有颜色都绑定 app.theme.*；类属性保证 kv 解析规则时就能取到
+    theme = theme_mod.THEME
     # 状态
     font_name = StringProperty(FONT)
     status_text = StringProperty("就绪")
@@ -512,6 +523,11 @@ class SongGrabApp(App):
 
     def build(self):
         self.title = "肥鱼音乐 SongGrab"
+        try:
+            theme_mod.apply_saved()          # 读 theme.json；任何异常内部回退深色
+        except Exception:
+            theme_mod.THEME.set_mode("dark", save=False)
+        self._sync_window_bg()
         if not pc.IS_ANDROID:
             # 桌面调试时模拟手机竖屏；Android 上由系统全屏接管
             try:
@@ -540,6 +556,24 @@ class SongGrabApp(App):
         # 启动画面停 0.9 秒，然后淡入主界面
         Clock.schedule_once(self._leave_splash, 1.8)
         return root
+
+    def _sync_window_bg(self) -> None:
+        """把窗口清屏色也对齐主题（转屏/拉伸时不会闪出黑边）。"""
+        try:
+            from kivy.core.window import Window
+            Window.clearcolor = tuple(self.theme.bg)
+        except Exception:
+            pass
+
+    def set_theme(self, mode: str) -> None:
+        """设置页切换主题：只改属性，kv 绑定自动重绘，不重建界面。"""
+        try:
+            resolved = self.theme.set_mode(mode, save=True)
+        except Exception as e:
+            self.status_text = f"主题切换失败：{e}"
+            return
+        self._sync_window_bg()
+        self.status_text = f"主题：{theme_mod.MODE_TEXT.get(mode, resolved)}"
 
     def _auto_update(self):
         """启动时检查代码更新。全程写 sg-update.log —— 以前异常被静默吞掉，

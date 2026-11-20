@@ -1,5 +1,5 @@
 {
-  "build": "1.0.2",
-  "note": "1.0.2：热更加固——只认带版本号的 seed（旧缓存包会被拒，不会再把旧代码写成新版本）；seed 源改为不可变 tag 地址并带 jsDelivr 多节点 + raw 兜底",
-  "seed": "https://cdn.jsdelivr.net/gh/seedfy1/Song-Grab@v1.0.2/assets/seed.zip"
+  "build": "1.0.3",
+  "note": "1.0.3：移植 Windows 1.1.4 的 B 支灰度（10% 稳定分桶补搜，不改判据）+ 自研深浅/跟随系统主题（实时切换、不重建界面，坏配置自动回退深色）",
+  "seed": "https://cdn.jsdelivr.net/gh/seedfy1/Song-Grab@v1.0.3/assets/seed.zip"
 }

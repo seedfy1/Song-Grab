@@ -1985,6 +1985,8 @@ def pick_card(
 
     # v8：加权分先算一遍存表，排序与候选池共用（原来 sort 的 key 里反复调 _score）
     _sc = {c.bvid: _score(c) for c in above}
+    # L45：B 支 gate 只读这次分数，不改排序与任何判据
+    pick_card._last_scores = dict(_sc)
     above.sort(
         # 第一维：翻唱候选（kind=2）永远排在同组非翻唱候选之后。
         # 注意 reverse=True，所以非翻唱要填 0（更小）= 排前面。
@@ -3767,6 +3769,102 @@ def split_author_choices(line: str) -> list[tuple[str, str]]:
     return out
 
 
+# ===== L45：B 支灰度分流（默认 A；B = 最简并集去重 + gate 实时公式），移植自 Windows 1.1.4 =====
+# 只做对照流量积累：不改 _score 任何系数、不动 pick_card 过滤链与 §7 canonical 口径。
+_B_GATE_ENABLED = True      # 一键关回纯 A（关掉后与上一版 A 支行为等价）
+_B_BUCKET_PCT = 10          # B 支比例（写死常数，不按结果调）
+_B_MIN_N = 5
+_B_MIN_DIFF = 0.05
+_B_MIN_COVER = 0.60
+_BARE_PAREN_MOD = re.compile(
+    r"[\(（\[【][^\)）\]】]{0,40}(?:live|现场|2024|feat|伴奏|男声|remaster|"
+    r"karaoke|cover|翻唱|instrumental|off ?vocal)[^\)）\]】]{0,40}[\)）\]】]", re.I)
+_BARE_ASCII = re.compile(r"(?i)\b(live|remaster(?:ed)?|karaoke|cover|instrumental)\b")
+_BARE_CN = ("现场版", "2024版", "男声版", "现场", "伴奏版", "伴奏",
+            "卡拉OK版", "卡拉ok")
+_BARE_FEAT = re.compile(r"(?i)\s*feat\.?\s.*$")
+_BARE_EMPTY_PAREN = re.compile(r"(?i)\s*[\(（\[【]\s*[\)）\]】]\s*")
+_BARE_STRIP = " -–—_|｜/／·~,，、"
+
+
+def _ab_branch(line: str) -> str:
+    """按行文本稳定哈希分桶：B 占 _B_BUCKET_PCT%，其余 A。无随机、可复现。"""
+    if not _B_GATE_ENABLED or _B_BUCKET_PCT <= 0:
+        return "A"
+    key = normalize(str(line or "")).strip()
+    if not key:
+        return "A"
+    h = hashlib.sha256(key.encode("utf-8")).hexdigest()
+    return "B" if (int(h[:8], 16) % 100) < _B_BUCKET_PCT else "A"
+
+
+def _bare_query(line: str) -> str:
+    """裸词串：剥修饰词/圆括号注释/feat 客串，保留歌名实体与用户 + 写明的作者。
+    剥离表随 1.1.4 冻结（docs/samples_20261116/bare_map.tsv 口径）。"""
+    s = str(line or "").strip()
+    if not s:
+        return s
+    parts = s.rsplit("+", 1)
+    head = parts[0]
+    h = _BARE_PAREN_MOD.sub("", head)
+    h = _BARE_ASCII.sub("", h)
+    for w in _BARE_CN:
+        h = h.replace(w, "")
+    h = _BARE_FEAT.sub("", h)
+    h = _BARE_EMPTY_PAREN.sub("", h)
+    h = re.sub(r"[\s\u3000]+", " ", h).strip(_BARE_STRIP)
+    # 裸词查询只取歌名段（作者段只防误剥，不进 query；与离线 bare_map 口径一致）
+    return (h or head.strip()).strip()
+
+
+def _title_cover(song: str, title: str) -> float:
+    """字面重合度：歌名字符（去空白）在标题中的覆盖率。不作正片判定。"""
+    sc = {ch for ch in (song or "") if not ch.isspace()}
+    if not sc:
+        return 0.0
+    tc = {ch for ch in (title or "") if not ch.isspace()}
+    return len(sc & tc) / len(sc)
+
+
+def _b_gate(cards: list, song: str) -> bool:
+    """历史 gate 实时公式：G1 n>0、G2 n>=5、G3 top1-top2>=0.05、
+    G4 字面覆盖>=0.60；pass=G1 and G2 and (G3 or G4)。只用池内信号。"""
+    n = len(cards)
+    if n <= 0 or n < _B_MIN_N:
+        return False
+    diff = 0.0
+    try:
+        pick_card(cards, song, artist="")
+        vals = sorted((getattr(pick_card, "_last_scores", {}) or {}).values(),
+                      reverse=True)
+        if len(vals) >= 2:
+            diff = float(vals[0] - vals[1])
+    except Exception:
+        diff = 0.0
+    cov = _title_cover(song, cards[0].title if cards else "")
+    return bool(diff >= _B_MIN_DIFF or cov >= _B_MIN_COVER)
+
+
+def _b_augment(cards: list, line: str, song: str, artist: str, say=None) -> list:
+    """B 支：gate 不过 → 裸词查询 → 按 bvid 并集去重；扩失败/无增益回退原池。"""
+    say = say or (lambda *a, **k: None)
+    if _b_gate(cards, song):
+        return cards
+    bare = _bare_query(line)
+    if not bare or bare == str(line or "").strip():
+        return cards
+    say("search", f"[B] 置信度不足，补搜「{bare}」…")
+    try:
+        extra = search_both(bare)
+    except Exception:
+        return cards
+    if not extra:
+        return cards
+    seen = {c.bvid for c in cards}
+    add = [c for c in extra if c.bvid and c.bvid not in seen]
+    return (cards + add) if add else cards
+
+
 def choose_card(
     line: str,
     cfg: dict[str, Any],
@@ -3775,8 +3873,11 @@ def choose_card(
     ref_dur: float = 0.0,
     known_artists: list[str] | None = None,
     canonical_artist: str | None = None,
+    ab_branch: str = "A",
 ) -> tuple[PickResult, list[Card], str, str]:
     """按「歌名+作者」规则选片：先带作者搜，结果少且播放量低再退。
+
+    ab_branch="B" 时，置信度 gate 不过就补一轮裸词查询（L45 灰度，默认 A）。
 
     返回 (选片结果, 候选列表, 实际歌名, 作者)。
     """
@@ -3797,6 +3898,10 @@ def choose_card(
         except Exception as e:
             cards = []
             say("search", f"搜索失败：{e}")
+
+        # L45：B 支（灰度 10%）只在 gate 不过时补裸词并集；A 支原样
+        if ab_branch == "B":
+            cards = _b_augment(cards, line, song, artist, say)
 
         fit = [c for c in cards if title_matched(c.title, song)]
         top = max((c.play for c in fit), default=0)
@@ -4014,12 +4119,14 @@ def known_bad_undo(song: str, bvid: str) -> bool:
 
 
 def record_correction(song: str, old_bvid: str, new_bvid: str, *, tier: str = "",
-                      fail_kind: str = "", kind: str = "repick") -> bool:
+                      fail_kind: str = "", kind: str = "repick",
+                      branch: str = "") -> bool:
     """记录一次用户纠正动作（事件流水，不写作者结论）。"""
     return _hit_append(CORRECTIONS_FILE, {
         "ts": time.time(), "at": time.strftime("%Y-%m-%d %H:%M:%S"),
         "song": song or "", "old_bvid": old_bvid or "", "new_bvid": new_bvid or "",
         "tier": tier or "", "fail_kind": fail_kind or "", "kind": kind,
+        "branch": branch or "",
     })
 
 
@@ -4180,6 +4287,7 @@ def describe_song(line: str, cfg: dict[str, Any], say=None,
     if canonical_artist is None and source == "hint" and artist:
         canonical_artist = artist
 
+    _ab = _ab_branch(line)          # L45：灰度分流（默认 A）
     res: dict[str, Any] = {
         "card": None, "pick": None, "song": song, "artist": artist,
         "artist_source": source, "pending": False, "fname": "", "reason": "",
@@ -4189,6 +4297,7 @@ def describe_song(line: str, cfg: dict[str, Any], say=None,
         "direct": vref is not None and not forced_bv,
         "forced": bool(forced_bv),
         "video": None, "need_name": False, "known_good": bool(_kg_hit),
+        "ab": _ab,
         # CAND(5): 候选池与头部两名的分数先占位，保证任何 return 都有这三个键
         "candidates": [], "top_score": 0.0, "second_score": 0.0,
     }
@@ -4302,7 +4411,8 @@ def describe_song(line: str, cfg: dict[str, Any], say=None,
     # 只有 ≥2 条同长才算可信参照；单条孤证不用于选片降权（C5 精神：宁可漏判）。
     pick, cards, picked_song, picked_artist = choose_card(
         line, cfg, say, ref_dur=clip_base if _mode_n >= 2 else 0.0,
-        known_artists=known_names, canonical_artist=canonical_artist)
+        known_artists=known_names, canonical_artist=canonical_artist,
+                    ab_branch=_ab)
     _check(cancel)
     song = picked_song or song
     if picked_artist:
@@ -4339,7 +4449,8 @@ def describe_song(line: str, cfg: dict[str, Any], say=None,
                 _prev_pick = pick
                 pick, cards, picked_song, picked_artist = choose_card(
                     line, cfg, say, exclude=excluded, ref_dur=clip_base,
-                    known_artists=known_names, canonical_artist=canonical_artist)
+                    known_artists=known_names, canonical_artist=canonical_artist,
+                    ab_branch=_ab)
                 _check(cancel)
                 if not pick.card:
                     # 换无可换：留用原片段（宁可下个片段，也别整首不下），作者按众数兜底
@@ -4399,7 +4510,8 @@ def describe_song(line: str, cfg: dict[str, Any], say=None,
                     _prev_pick = pick
                     pick, cards, picked_song, picked_artist = choose_card(
                         line, cfg, say, exclude=excluded, ref_dur=clip_base,
-                        known_artists=known_names, canonical_artist=canonical_artist)
+                        known_artists=known_names, canonical_artist=canonical_artist,
+                    ab_branch=_ab)
                     _check(cancel)
                     if not pick.card:
                         # 换无可换：留用当前翻唱版，作者跟随视频（自洽，宁下翻唱不落空）
@@ -4606,9 +4718,11 @@ def trial_song(line: str, cfg: dict[str, Any] | None = None, say=None,
         "keyword": "", "branch": 0, "stage": "failed", "match_kind": "none",
         "bvid": "", "title": "", "author": "", "duration": 0, "score": 0.0,
         "candidates": [], "pool_count": 0, "over_1w": 0,
-        "reason": "", "need_name": False, "fname": "",
+        "reason": "", "need_name": False, "fname": "", "ab": "",
     }
     raw = str(line or "").strip()
+    _ab = _ab_branch(raw)           # L45：灰度分流（默认 A）
+    res["ab"] = _ab
     if not raw:
         res["reason"] = "空行"
         return res
@@ -4740,6 +4854,18 @@ def trial_song(line: str, cfg: dict[str, Any] | None = None, say=None,
         res["song"] = bare_song
         res["keyword"] = bare_song
     res["branch"] = branch
+
+    # L45：B 支——gate 不过则补裸词并集后重排；A 支原样（判据与系数零改动）
+    if _ab == "B":
+        _b_song0 = chosen["song"] if chosen else (best["song"] if best else base_song)
+        _b_new = _b_augment(cards_all, raw, _b_song0, artist, say)
+        if len(_b_new) > len(cards_all):
+            _absorb(_b_new)
+            _pick_b = _trial_rank(cards_all, _b_song0, artist, cfg,
+                                  clip_base if _mode_n >= 2 else 0.0, known, None)
+            if _pick_b.card:
+                pick = _pick_b
+                res["song"] = _b_song0
 
     # 白名单最优先：UP 主名完全一致 + 标题完整带歌名（简介带不算）+ 过时长窗口
     # L15：标题命中合唱/翻唱/改编等词条的视频不享受白名单优先，回到正常筛选

@@ -1,10 +1,33 @@
 #:import dp kivy.metrics.dp
 #:import sp kivy.metrics.sp
 
+# 全局默认色：所有控件默认跟着主题走（具体规则里显式写的会覆盖它）
+<Screen>:
+    canvas.before:
+        Color:
+            rgba: app.theme.bg
+        Rectangle:
+            pos: self.pos
+            size: self.size
+
+<Label>:
+    color: app.theme.text
+
+<Button>:
+    color: app.theme.btn_text
+
+<TextInput>:
+    background_normal: ''
+    background_active: ''
+    background_color: app.theme.input_bg
+    foreground_color: app.theme.input_fg
+    cursor_color: app.theme.accent
+    hint_text_color: app.theme.text_hint
+
 <SplashScreen>:
     canvas.before:
         Color:
-            rgba: 0.058, 0.066, 0.090, 1
+            rgba: app.theme.bg
         Rectangle:
             pos: self.pos
             size: self.size
@@ -22,14 +45,14 @@
             text: '肥鱼音乐'
             font_name: app.font_name
             font_size: sp(30)
-            color: 0.90, 0.91, 0.95, 1
+            color: app.theme.text
             size_hint_y: None
             height: dp(48)
         Label:
             text: 'SongGrab'
             font_name: app.font_name
             font_size: sp(14)
-            color: 0.42, 0.45, 0.55, 1
+            color: app.theme.text_hint
             size_hint_y: None
             height: dp(26)
         Label:
@@ -37,7 +60,7 @@
             text: '正在加载…'
             font_name: app.font_name
             font_size: sp(12)
-            color: 0.35, 0.38, 0.48, 1
+            color: app.theme.text_hint
             size_hint_y: None
             height: dp(24)
         Widget:
@@ -52,7 +75,7 @@
     spacing: dp(6)
     canvas.before:
         Color:
-            rgba: (0.17, 0.18, 0.23, 1)
+            rgba: app.theme.surface
         RoundedRectangle:
             pos: self.pos
             size: self.size
@@ -80,7 +103,7 @@
         text: root.reason
         font_name: app.font_name
         font_size: sp(12)
-        color: 0.62, 0.64, 0.72, 1
+        color: app.theme.text_dim
         size_hint_x: 0.42
         halign: 'left'
         valign: 'middle'
@@ -113,7 +136,7 @@
                 size_hint_x: None
                 width: dp(64)
                 background_normal: ''
-                background_color: 0.25, 0.27, 0.33, 1
+                background_color: app.theme.btn
                 on_release: app.sm.current = 'settings'
 
         # ---------- 歌单输入 ----------
@@ -128,9 +151,9 @@
                 font_size: sp(14)
                 multiline: True
                 hint_text: '一行一首。歌名+歌手用加号分隔…'
-                background_color: 0.13, 0.14, 0.18, 1
-                foreground_color: 0.92, 0.93, 0.96, 1
-                cursor_color: 0.9, 0.9, 1, 1
+                background_color: app.theme.input_bg
+                foreground_color: app.theme.input_fg
+                cursor_color: app.theme.accent
             BoxLayout:
                 size_hint_y: None
                 height: dp(42)
@@ -140,28 +163,28 @@
                     font_name: app.font_name
                     font_size: sp(13)
                     background_normal: ''
-                    background_color: 0.25, 0.27, 0.33, 1
+                    background_color: app.theme.btn
                     on_release: app.pick_playlist()
                 Button:
                     text: '清空'
                     font_name: app.font_name
                     font_size: sp(13)
                     background_normal: ''
-                    background_color: 0.25, 0.27, 0.33, 1
+                    background_color: app.theme.btn
                     on_release: root.ids.song_input.text = ''
                 Button:
                     text: '试搜'
                     font_name: app.font_name
                     font_size: sp(13)
                     background_normal: ''
-                    background_color: 0.20, 0.35, 0.55, 1
+                    background_color: app.theme.accent
                     on_release: app.try_search()
 
         Label:
             text: '提示：歌名+歌手，用加号，如 晴天+周杰伦；不加加号则整串当歌名'
             font_name: app.font_name
             font_size: sp(11)
-            color: 0.52, 0.54, 0.62, 1
+            color: app.theme.text_sub
             size_hint_y: None
             height: dp(34)
             halign: 'left'
@@ -177,7 +200,7 @@
                 text: '输出：' + app.out_dir
                 font_name: app.font_name
                 font_size: sp(11)
-                color: 0.55, 0.57, 0.65, 1
+                color: app.theme.text_sub
                 halign: 'left'
                 text_size: self.width, None
                 shorten: True
@@ -189,7 +212,7 @@
                 size_hint_x: None
                 width: dp(52)
                 background_normal: ''
-                background_color: 0.25, 0.27, 0.33, 1
+                background_color: app.theme.btn
                 on_release: app.do_open_folder()
 
         # ---------- 主操作 ----------
@@ -199,7 +222,7 @@
             height: dp(8)
             max: 1.0
             value: app.progress
-            background_color: 0.18, 0.19, 0.24, 1
+            background_color: app.theme.neutral2
             border: (0, 0, 0, 0)
 
         Label:
@@ -207,7 +230,7 @@
             text: app.status_text
             font_name: app.font_name
             font_size: sp(12)
-            color: 0.72, 0.74, 0.82, 1
+            color: app.theme.text_dim
             size_hint_y: None
             height: dp(38)
             halign: 'left'
@@ -224,7 +247,7 @@
                 font_name: app.font_name
                 font_size: sp(16)
                 background_normal: ''
-                background_color: (0.20, 0.62, 0.38, 1) if not app.running else (0.22, 0.23, 0.28, 1)
+                background_color: app.theme.ok if not app.running else app.theme.disabled
                 disabled: app.running
                 on_release: app.start_download(root.ids.song_input.text)
             Button:
@@ -234,7 +257,7 @@
                 size_hint_x: None
                 width: dp(84)
                 background_normal: ''
-                background_color: (0.75, 0.30, 0.30, 1) if app.running else (0.22, 0.23, 0.28, 1)
+                background_color: app.theme.danger if app.running else app.theme.disabled
                 disabled: not app.running
                 on_release: app.stop_download()
 
@@ -259,21 +282,21 @@
                 font_name: app.font_name
                 font_size: sp(13)
                 background_normal: ''
-                background_color: 0.25, 0.27, 0.33, 1
+                background_color: app.theme.btn
                 on_release: app.do_open_folder()
             Button:
                 text: '重试失败'
                 font_name: app.font_name
                 font_size: sp(13)
                 background_normal: ''
-                background_color: 0.25, 0.27, 0.33, 1
+                background_color: app.theme.btn
                 on_release: app.retry_failed()
             Button:
                 text: '复制失败'
                 font_name: app.font_name
                 font_size: sp(13)
                 background_normal: ''
-                background_color: 0.25, 0.27, 0.33, 1
+                background_color: app.theme.btn
                 on_release: app.copy_failed()
 
         BoxLayout:
@@ -285,7 +308,7 @@
                 font_name: app.font_name
                 font_size: sp(13)
                 background_normal: ''
-                background_color: (0.20, 0.34, 0.28, 1) if app.require_confirm else (0.34, 0.26, 0.20, 1)
+                background_color: app.theme.ok_soft if app.require_confirm else app.theme.warn_soft
                 on_release: app.toggle_require_confirm()
             Button:
                 text: '清空'
@@ -293,7 +316,7 @@
                 font_size: sp(13)
                 size_hint_x: 0.45
                 background_normal: ''
-                background_color: 0.25, 0.27, 0.33, 1
+                background_color: app.theme.btn
                 on_release: root.clear_rows()
 
 
@@ -316,7 +339,7 @@
                     size_hint_x: None
                     width: dp(64)
                     background_normal: ''
-                    background_color: 0.25, 0.27, 0.33, 1
+                    background_color: app.theme.btn
                     on_release: app.sm.current = 'main'
                 Label:
                     text: '设置'
@@ -324,11 +347,48 @@
                     font_size: sp(19)
                     bold: True
 
+            BoxLayout:
+                size_hint_y: None
+                height: dp(44)
+                spacing: dp(6)
+                Label:
+                    text: '主题'
+                    font_name: app.font_name
+                    font_size: sp(13)
+                    color: app.theme.text_label
+                    size_hint_x: 0.22
+                    halign: 'left'
+                    text_size: self.width, None
+                Button:
+                    id: theme_dark_btn
+                    text: '深色'
+                    font_name: app.font_name
+                    font_size: sp(13)
+                    background_normal: ''
+                    background_color: app.theme.accent if app.theme.pref == 'dark' else app.theme.btn
+                    on_release: app.set_theme('dark')
+                Button:
+                    id: theme_light_btn
+                    text: '浅色'
+                    font_name: app.font_name
+                    font_size: sp(13)
+                    background_normal: ''
+                    background_color: app.theme.accent if app.theme.pref == 'light' else app.theme.btn
+                    on_release: app.set_theme('light')
+                Button:
+                    id: theme_system_btn
+                    text: '跟随系统'
+                    font_name: app.font_name
+                    font_size: sp(13)
+                    background_normal: ''
+                    background_color: app.theme.accent if app.theme.pref == 'system' else app.theme.btn
+                    on_release: app.set_theme('system')
+
             Label:
                 text: '输出目录'
                 font_name: app.font_name
                 font_size: sp(13)
-                color: 0.65, 0.67, 0.75, 1
+                color: app.theme.text_label
                 size_hint_y: None
                 height: dp(22)
                 halign: 'left'
@@ -340,8 +400,8 @@
                 multiline: False
                 size_hint_y: None
                 height: dp(44)
-                background_color: 0.13, 0.14, 0.18, 1
-                foreground_color: 0.92, 0.93, 0.96, 1
+                background_color: app.theme.input_bg
+                foreground_color: app.theme.input_fg
 
             BoxLayout:
                 size_hint_y: None
@@ -351,7 +411,7 @@
                     text: '最低播放量'
                     font_name: app.font_name
                     font_size: sp(12)
-                    color: 0.65, 0.67, 0.75, 1
+                    color: app.theme.text_label
                     size_hint_x: 0.42
                     halign: 'left'
                     text_size: self.width, None
@@ -361,8 +421,8 @@
                     font_size: sp(13)
                     multiline: False
                     input_filter: 'int'
-                    background_color: 0.13, 0.14, 0.18, 1
-                    foreground_color: 0.92, 0.93, 0.96, 1
+                    background_color: app.theme.input_bg
+                    foreground_color: app.theme.input_fg
 
             BoxLayout:
                 size_hint_y: None
@@ -372,7 +432,7 @@
                     text: '时长(秒)'
                     font_name: app.font_name
                     font_size: sp(12)
-                    color: 0.65, 0.67, 0.75, 1
+                    color: app.theme.text_label
                     size_hint_x: 0.30
                     halign: 'left'
                     text_size: self.width, None
@@ -382,13 +442,13 @@
                     font_size: sp(13)
                     multiline: False
                     input_filter: 'int'
-                    background_color: 0.13, 0.14, 0.18, 1
-                    foreground_color: 0.92, 0.93, 0.96, 1
+                    background_color: app.theme.input_bg
+                    foreground_color: app.theme.input_fg
                 Label:
                     text: '~'
                     font_name: app.font_name
                     font_size: sp(13)
-                    color: 0.65, 0.67, 0.75, 1
+                    color: app.theme.text_label
                     size_hint_x: None
                     width: dp(16)
                 TextInput:
@@ -397,14 +457,14 @@
                     font_size: sp(13)
                     multiline: False
                     input_filter: 'int'
-                    background_color: 0.13, 0.14, 0.18, 1
-                    foreground_color: 0.92, 0.93, 0.96, 1
+                    background_color: app.theme.input_bg
+                    foreground_color: app.theme.input_fg
 
             Label:
                 text: '时长范围：最短 / 最长（0 = 不限，默认 50 / 720 秒）'
                 font_name: app.font_name
                 font_size: sp(10)
-                color: 0.45, 0.47, 0.55, 1
+                color: app.theme.text_hint
                 size_hint_y: None
                 height: dp(16)
                 halign: 'left'
@@ -418,7 +478,7 @@
                     text: '曲库作者优先（同名歌优先原唱）'
                     font_name: app.font_name
                     font_size: sp(12)
-                    color: 0.65, 0.67, 0.75, 1
+                    color: app.theme.text_label
                     halign: 'left'
                     text_size: self.width, None
                 CheckBox:
@@ -434,7 +494,7 @@
                     text: '格式'
                     font_name: app.font_name
                     font_size: sp(12)
-                    color: 0.65, 0.67, 0.75, 1
+                    color: app.theme.text_label
                     size_hint_x: None
                     width: dp(46)
                     halign: 'left'
@@ -465,7 +525,7 @@
                 text: 'mp4 仅在输入 BV 号 / 视频链接时生效，歌名搜索会按音频下载'
                 font_name: app.font_name
                 font_size: sp(11)
-                color: 0.62, 0.64, 0.72, 1
+                color: app.theme.text_dim
                 size_hint_y: None
                 height: dp(20)
                 halign: 'left'
@@ -475,7 +535,7 @@
                 text: '优先级词条（越靠上越优先，支持正则）'
                 font_name: app.font_name
                 font_size: sp(13)
-                color: 0.65, 0.67, 0.75, 1
+                color: app.theme.text_label
                 size_hint_y: None
                 height: dp(22)
                 halign: 'left'
@@ -485,7 +545,7 @@
                 text: '可写正则，例：(Hi-?res|无损)  4K|官方  完整版'
                 font_name: app.font_name
                 font_size: sp(10)
-                color: 0.45, 0.47, 0.55, 1
+                color: app.theme.text_hint
                 size_hint_y: None
                 height: dp(16)
                 halign: 'left'
@@ -508,21 +568,21 @@
                     font_name: app.font_name
                     font_size: sp(12)
                     background_normal: ''
-                    background_color: 0.25, 0.27, 0.33, 1
+                    background_color: app.theme.btn
                     on_release: app.ask_add_prio()
                 Button:
                     text: '全部清空'
                     font_name: app.font_name
                     font_size: sp(12)
                     background_normal: ''
-                    background_color: 0.25, 0.27, 0.33, 1
+                    background_color: app.theme.btn
                     on_release: root.reset_words()
 
             Label:
                 text: app.cookie_hint
                 font_name: app.font_name
                 font_size: sp(11)
-                color: (0.45, 0.75, 0.55, 1) if '已导入' in app.cookie_hint else (0.75, 0.6, 0.35, 1)
+                color: app.theme.ok_text if '已导入' in app.cookie_hint else app.theme.warn_text
                 size_hint_y: None
                 height: dp(20)
                 halign: 'left'
@@ -532,7 +592,7 @@
                 text: app.ffmpeg_hint
                 font_name: app.font_name
                 font_size: sp(11)
-                color: 0.55, 0.57, 0.65, 1
+                color: app.theme.text_sub
                 size_hint_y: None
                 height: dp(20)
                 halign: 'left'
@@ -545,7 +605,7 @@
                 size_hint_y: None
                 height: dp(44)
                 background_normal: ''
-                background_color: 0.22, 0.40, 0.30, 1
+                background_color: app.theme.ok_soft
                 on_release: app.show_help()
 
             Button:
@@ -555,7 +615,7 @@
                 size_hint_y: None
                 height: dp(40)
                 background_normal: ''
-                background_color: 0.30, 0.30, 0.36, 1
+                background_color: app.theme.neutral
                 on_release: app.run_diag()
 
             Button:
@@ -565,7 +625,7 @@
                 size_hint_y: None
                 height: dp(44)
                 background_normal: ''
-                background_color: 0.18, 0.42, 0.68, 1
+                background_color: app.theme.info
                 on_release: app.open_qr_login()
 
             Button:
@@ -575,14 +635,14 @@
                 size_hint_y: None
                 height: dp(44)
                 background_normal: ''
-                background_color: 0.45, 0.35, 0.15, 1
+                background_color: app.theme.warn
                 on_release: app.ask_storage_permission()
 
             Label:
                 text: '自定义更新源（version.json 的 URL，留空 = 官方源）'
                 font_name: app.font_name
                 font_size: sp(10)
-                color: 0.45, 0.47, 0.55, 1
+                color: app.theme.text_hint
                 size_hint_y: None
                 height: dp(16)
                 halign: 'left'
@@ -594,8 +654,8 @@
                 multiline: False
                 size_hint_y: None
                 height: dp(40)
-                background_color: 0.13, 0.14, 0.18, 1
-                foreground_color: 0.92, 0.93, 0.96, 1
+                background_color: app.theme.input_bg
+                foreground_color: app.theme.input_fg
 
             BoxLayout:
                 size_hint_y: None
@@ -606,14 +666,14 @@
                     font_name: app.font_name
                     font_size: sp(12)
                     background_normal: ''
-                    background_color: 0.20, 0.34, 0.48, 1
+                    background_color: app.theme.info_soft
                     on_release: app.check_update_now()
                 Button:
                     text: '忘掉已确认的音源'
                     font_name: app.font_name
                     font_size: sp(12)
                     background_normal: ''
-                    background_color: 0.32, 0.20, 0.24, 1
+                    background_color: app.theme.danger_soft
                     on_release: app.forget_confirm()
 
             BoxLayout:
@@ -625,21 +685,21 @@
                     font_name: app.font_name
                     font_size: sp(12)
                     background_normal: ''
-                    background_color: 0.28, 0.30, 0.36, 1
+                    background_color: app.theme.neutral
                     on_release: app.export_metrics()
                 Button:
                     text: '导出待补清单'
                     font_name: app.font_name
                     font_size: sp(12)
                     background_normal: ''
-                    background_color: 0.28, 0.30, 0.36, 1
+                    background_color: app.theme.neutral
                     on_release: app.export_need_list()
 
             Label:
                 text: app.update_hint
                 font_name: app.font_name
                 font_size: sp(11)
-                color: (0.45, 0.78, 0.55, 1) if '最新' in app.update_hint else (0.75, 0.68, 0.45, 1)
+                color: app.theme.ok_text if '最新' in app.update_hint else app.theme.warn_text
                 size_hint_y: None
                 height: dp(18)
                 halign: 'left'
@@ -652,5 +712,5 @@
                 size_hint_y: None
                 height: dp(50)
                 background_normal: ''
-                background_color: 0.20, 0.62, 0.38, 1
+                background_color: app.theme.ok
                 on_release: root.save()
